@@ -552,8 +552,8 @@ export class NeteaseRealtimeTransport {
         sdkLogLevel: 2,
       },
       linkOption: {
-        linkTimeout: 8_000,
-        protocolTimeout: 10_000,
+        linkTimeout: 6_000,
+        protocolTimeout: 8_000,
       },
       databaseOption: {
         encryptionKey: NIM_APP_KEY,
@@ -564,32 +564,8 @@ export class NeteaseRealtimeTransport {
       throw new Error(`NIM V2 client initialization failed code=${String(clientInitCode)}`);
     }
 
-    const chatroomInit = nim.V2NIMChatroomClient.init({
-      appkey: NIM_APP_KEY,
-      appDataPath: join(dataRoot, "chatroom"),
-      basicOption: {
-        useHttps: true,
-        useHttpdns: true,
-        sdkLogLevel: 2,
-      },
-      linkOption: {
-        linkTimeout: 8_000,
-        protocolTimeout: 10_000,
-      },
-      databaseOption: {
-        encryptionKey: NIM_APP_KEY,
-      },
-    });
-    const chatroomInitCode = nimErrorCode(chatroomInit);
-    if (chatroomInitCode !== 0) {
-      throw new Error(`NIM V2 ChatRoom initialization failed code=${String(chatroomInitCode)}`);
-    }
-
     const loginService = client.getLoginService();
     if (!loginService) throw new Error("NIM V2 login service is unavailable");
-
-    const chatroom = nim.V2NIMChatroomClient.newInstance();
-    const chatroomService = chatroom.getChatroomService();
 
     loginService.on("disconnected", (...args: unknown[]) => {
       this.status.connected = false;
@@ -608,6 +584,44 @@ export class NeteaseRealtimeTransport {
         : `NIM V2 IM connect failed code=${code}`;
       console.warn(this.status.lastError);
     });
+
+    this.nim = nim;
+    this.v2Client = client;
+    this.loginService = loginService;
+    this.runtimeReady = true;
+    console.log("NetEase NIM V2 IM runtime initialized");
+  }
+
+  private async ensureChatroomRuntime(): Promise<void> {
+    if (this.chatroom && this.chatroomService) return;
+    const nim = this.nim;
+    if (!nim) throw new Error("NIM V2 module is unavailable");
+
+    const dataRoot = join(tmpdir(), "cove-nim-v2-runtime");
+    await mkdir(dataRoot, { recursive: true });
+    const chatroomInit = nim.V2NIMChatroomClient.init({
+      appkey: NIM_APP_KEY,
+      appDataPath: join(dataRoot, "chatroom"),
+      basicOption: {
+        useHttps: true,
+        useHttpdns: true,
+        sdkLogLevel: 2,
+      },
+      linkOption: {
+        linkTimeout: 5_000,
+        protocolTimeout: 5_000,
+      },
+      databaseOption: {
+        encryptionKey: NIM_APP_KEY,
+      },
+    });
+    const chatroomInitCode = nimErrorCode(chatroomInit);
+    if (chatroomInitCode !== 0) {
+      throw new Error(`NIM V2 ChatRoom initialization failed code=${String(chatroomInitCode)}`);
+    }
+
+    const chatroom = nim.V2NIMChatroomClient.newInstance();
+    const chatroomService = chatroom.getChatroomService();
 
     chatroom.on("chatroomExited", (...args: unknown[]) => {
       this.status.connected = false;
@@ -638,13 +652,9 @@ export class NeteaseRealtimeTransport {
       }
     });
 
-    this.nim = nim;
-    this.v2Client = client;
-    this.loginService = loginService;
     this.chatroom = chatroom;
     this.chatroomService = chatroomService;
-    this.runtimeReady = true;
-    console.log("NetEase NIM V2 realtime runtime initialized");
+    console.log("NetEase NIM V2 ChatRoom runtime initialized after IM login");
   }
 
   private handleIncomingMessage(raw: unknown): void {
@@ -726,6 +736,7 @@ export class NeteaseRealtimeTransport {
 
     await this.ensureRuntime();
     await this.ensureLoggedIn(options.credentials);
+    await this.ensureChatroomRuntime();
 
     const login = this.loginService;
     const chatroom = this.chatroom;
