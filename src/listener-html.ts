@@ -26,6 +26,8 @@ export function buildListenerHtml(): string {
 <script>
 (() => {
   const FALLBACK_POLL_MS = ${LISTENER_FALLBACK_POLL_MS};
+  const FANQIE_FEEDBACK_MIN_MS = 20_000;
+  const FANQIE_BUFFER_MAX = 8;
   const pending = new Map();
   let rpcId = 0;
   let timer = 0;
@@ -43,6 +45,9 @@ export function buildListenerHtml(): string {
   const recentlyDispatched = new Set();
   const pendingAcks = new Set();
   const pendingDismissals = new Set();
+  const fanqieBuffer = [];
+  let lastFanqieFeedbackAt = 0;
+  let lastFanqieEpisode = '';
 
   const statusEl = document.getElementById('status');
   const toggleEl = document.getElementById('toggle');
@@ -218,8 +223,79 @@ export function buildListenerHtml(): string {
   function setIdleStatus() {
     if (!listening) return;
     setStatus(sseConnected
-      ? 'SSE 实时监听中，暂无新事件。'
-      : '监听中（SSE 重连中，12 秒轮询兜底）。');
+      ? '实时陪看中：番茄后台更新，约 20 秒最多反馈一次。'
+      : '陪看中（SSE 重连中，12 秒轮询兜底）。');
+  }
+
+  function fanqieEpisodeOf(event) {
+    const modelContext = String(event.modelContext || '');
+    const match = modelContext.match(/(?:^|\n)episode=([^\n]+)/);
+    if (match && match[1]) return match[1].trim();
+    const visible = String(event.visibleText || '');
+    const visibleMatch = visible.match(/第\s*\d+\s*集/);
+    return visibleMatch ? visibleMatch[0].replace(/\s+/g, '') : '';
+  }
+
+  function bufferFanqie(event) {
+    const text = String(event.visibleText || '').trim();
+    if (!text) return;
+    if (fanqieBuffer[fanqieBuffer.length - 1] === text) return;
+    fanqieBuffer.push(text);
+    while (fanqieBuffer.length > FANQIE_BUFFER_MAX) fanqieBuffer.shift();
+  }
+
+  function shouldFanqieFeedback(event) {
+    const now = Date.now();
+    const episode = fanqieEpisodeOf(event);
+    const episodeChanged = episode && lastFanqieEpisode && episode !== lastFanqieEpisode;
+    if (episode) lastFanqieEpisode = episode;
+    return episodeChanged || (now - lastFanqieFeedbackAt >= FANQIE_FEEDBACK_MIN_MS);
+  }
+
+  async function dispatchFanqieDigest(event) {
+    const recent = fanqieBuffer.join('\n\n--- 下一屏 ---\n\n');
+    await request('ui/update-model-context', {
+      content: [{
+        type: 'text',
+        text: [
+          String(event.modelContext || ''),
+          '',
+          'FANQIE RECENT OCR BUFFER:',
+          recent,
+          '',
+          '陪看规则：这是连续 OCR 片段，不要逐屏复述，不要展示技术字段。只根据明确读到的剧情自然短评；信息不足就说看不清，不要补剧情。',
+        ].join('\n'),
+        annotations: { audience: ['assistant'], priority: 1 }
+      }],
+      structuredContent: {
+        bridgeEvent: {
+          eventId: String(event.id),
+          correlationId: String(event.correlationId || event.id),
+          kind: String(event.kind || ''),
+          source: String(event.source || ''),
+          stream: String(event.stream || ''),
+          stateKey: String(event.stateKey || ''),
+          replyRoute: '',
+          replyPolicy: '',
+          createdAt: String(event.createdAt || '')
+        }
+      }
+    });
+
+    setStatus('刚看完一小段，正在让 ChatGPT 自然点评…');
+    try {
+      await requestHumanDecision('ui/message', {
+        role: 'user',
+        content: [{
+          type: 'text',
+          text: '📺 番茄陪看更新：刚刚有一小段新剧情。根据后台连续看到的内容自然说两句；没什么值得说就简短一点。'
+        }]
+      });
+      lastFanqieFeedbackAt = Date.now();
+      fanqieBuffer.length = 0;
+    } catch {
+      setStatus('本次陪看反馈已取消；后台继续看，不影响后续。');
+    }
   }
 
   async function openWakeStream(generation) {
@@ -253,7 +329,7 @@ export function buildListenerHtml(): string {
           source.onopen = () => {
             sseConnected = true;
             retryMs = 1000;
-            setStatus('SSE 实时监听中。');
+            setStatus('实时陪看中：番茄后台更新，约 20 秒最多反馈一次。');
           };
 
           source.addEventListener('wake', () => {
@@ -357,6 +433,23 @@ export function buildListenerHtml(): string {
         return;
       }
 
+      if (String(event.source || '') === 'netease.fanqie') {
+        bufferFanqie(event);
+        rememberPendingAck(eventId);
+        const acked = await flushPendingAcks();
+        if (!acked) {
+          setStatus('番茄画面已收到，正在确认；不会重复显示。');
+          return;
+        }
+        shouldContinue = true;
+        if (shouldFanqieFeedback(event)) {
+          await dispatchFanqieDigest(event);
+        } else {
+          setStatus('实时陪看中：已看到新画面，先安静看。');
+        }
+        return;
+      }
+
       setStatus('正在投递事件…');
       let dispatchResult;
       try {
@@ -413,7 +506,7 @@ export function buildListenerHtml(): string {
     listening = true;
     rememberListening(true);
     toggleEl.textContent = '停止监听';
-    setStatus('正在建立 SSE 实时监听…');
+    setStatus('正在建立实时陪看…');
     scheduleFallback();
     streamGeneration += 1;
     const generation = streamGeneration;
