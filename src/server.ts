@@ -148,6 +148,9 @@ export function createHttpServer(options: { mcpAccessToken?: string } = {}) {
     }
 
     if (req.method === "POST" && url.pathname === "/fanqie/events") {
+      writeJson(res, 503, { error: "fanqie_listener_paused" });
+      return;
+
       if (!fanqieAuthorized(req)) {
         writeJson(res, 401, { error: "unauthorized" });
         return;
