@@ -184,7 +184,7 @@ export function createHttpServer(options: { mcpAccessToken?: string } = {}) {
           "createdAt=" + createdAt,
         ].join("\n");
         const created = queue.enqueue(event);
-        if (created) listenerWakeHub.wake("netease.fanqie");
+        // Fanqie stays pull-only: do not wake the Widget Listener.
         writeJson(res, created ? 201 : 200, { ok: true, created, eventId: id });
       } catch (error) {
         const message = error instanceof Error ? error.message : "invalid_request";
