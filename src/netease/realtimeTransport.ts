@@ -564,8 +564,9 @@ export class NeteaseRealtimeTransport {
         child.once("message", (raw) => {
           const message = asRecord(raw);
           if (message.ok !== true) {
+            const childError = readString(message.error) || "NIM ticket bootstrap failed";
             finish(() => reject(new Error(
-              readString(message.error) || "NIM ticket bootstrap failed",
+              childError + (stderr ? ` stderr=${stderr.slice(-1200)}` : ""),
             )));
             return;
           }
