@@ -1,7 +1,6 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createConnection } from "node:net";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { createMcpServer } from "./mcp.js";
@@ -18,32 +17,6 @@ const INGEST_TOKEN = process.env.BRIDGE_INGEST_TOKEN ?? "";
 const UNIX_SOCKET = process.env.BRIDGE_UNIX_SOCKET?.trim() ?? "";
 const queue = new InMemoryEventQueue();
 const playbackState = new PlaybackStateStore();
-
-function probeTcp(label: string, host: string, port: number, timeoutMs = 5_000): void {
-  const startedAt = Date.now();
-  const socket = createConnection({ host, port });
-  let settled = false;
-  const finish = (outcome: string) => {
-    if (settled) return;
-    settled = true;
-    console.log(`TCP probe ${label}: ${outcome} elapsedMs=${Date.now() - startedAt}`);
-    socket.destroy();
-  };
-  socket.setTimeout(timeoutMs);
-  socket.once("connect", () => finish("connected"));
-  socket.once("timeout", () => finish("timeout"));
-  socket.once("error", (error: NodeJS.ErrnoException) => finish("error=" + (error.code || error.message)));
-}
-
-function runNimNetworkProbes(): void {
-  probeTcp("link-host-8080", "link.netease.im", 8080);
-  probeTcp("link-ip-a-8080", "47.251.17.96", 8080);
-  probeTcp("link-ip-b-8080", "198.11.180.194", 8080);
-  probeTcp("link-host-443", "link.netease.im", 443);
-  probeTcp("link-ip-a-443", "47.251.17.96", 443);
-  probeTcp("link-ip-b-443", "198.11.180.194", 443);
-  probeTcp("https-control", "music.163.com", 443);
-}
 
 function enqueueTogetherEvent(
   source: string,
@@ -217,7 +190,6 @@ export function createHttpServer(options: { mcpAccessToken?: string } = {}) {
 if (process.env.NODE_ENV !== "test") {
   createHttpServer().listen(PORT, "0.0.0.0", () => {
     console.log("Cove Resonance listening on http://0.0.0.0:" + PORT + " (MCP: /mcp, /mcp/music)");
-    runNimNetworkProbes();
     togetherWorker.start();
   });
 
