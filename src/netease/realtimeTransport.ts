@@ -322,7 +322,8 @@ export function decodeRealtimePlaybackEvent(
   const progress = readNumber(command.progress);
   const serverSeq = readNumber(command.serverSeq) ?? readNumber(envelope.serverSeq);
   const clientSeq = readNumber(command.clientSeq);
-  const rawMessage = asRecord(raw);\n  const senderId = readString(rawMessage.from_id_) ?? readString(rawMessage.senderId);
+  const rawMessage = asRecord(raw);
+  const senderId = readString(rawMessage.from_id_) ?? readString(rawMessage.senderId);
   return {
     type: "playback",
     serverSeq,
