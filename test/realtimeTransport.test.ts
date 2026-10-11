@@ -83,6 +83,35 @@ test("realtime status never contains credentials", () => {
   assert.equal("addresses" in status, false);
 });
 
+test("realtime status preserves the latest text message when custom events arrive later", () => {
+  const transport = new NeteaseRealtimeTransport(false);
+  const handleIncomingMessage = (transport as unknown as {
+    handleIncomingMessage: (raw: unknown) => void;
+  }).handleIncomingMessage.bind(transport);
+
+  handleIncomingMessage({
+    msg_type_: 0,
+    from_id_: "listener",
+    from_nick_: "Listener",
+    msg_body_: "hello in real time",
+    client_msg_id_: "text-message",
+    timetag_: 100,
+  });
+  handleIncomingMessage({
+    msg_type_: 100,
+    from_id_: "listener",
+    msg_attach_: JSON.stringify({ event_type: 12345 }),
+    client_msg_id_: "custom-message",
+    timetag_: 200,
+  });
+
+  const status = transport.getStatus();
+  assert.equal(status.lastChatMessage?.category, "custom");
+  assert.equal(status.lastTextMessage?.messageId, "text-message");
+  assert.equal(status.lastTextMessage?.text, "hello in real time");
+  assert.equal(status.lastSentMessage, null);
+});
+
 test("playback diagnostic only exposes whitelisted protocol fields", () => {
   const diagnostic = buildPlaybackDiagnostic({
     msg_type_: 100,

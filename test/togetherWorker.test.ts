@@ -863,6 +863,73 @@ test("NEXT resolves the following ORDER_LOOP displayList song and confirms via G
   assert.equal(result.serverSeq, 401);
 });
 
+test("queue snapshot resolves complete display and pending order around the current song", async () => {
+  const worker = new TogetherWorker({
+    cookie: "",
+    enabled: false,
+    onEvent: () => {},
+  });
+
+  const internals = worker as unknown as {
+    client: {
+      getTogetherPlaylist: (roomId: string) => Promise<{
+        displayList: string[];
+        randomList: string[];
+        playMode: string | null;
+        versions: Array<{ userId: string; version: number }>;
+      }>;
+      getSongDetailsMany: (songIds: string[]) => Promise<Array<{
+        id: string;
+        name: string;
+        artist: string;
+        durationMs: number;
+        album?: { id: string | null; name: string | null };
+      }>>;
+    };
+    roomId: string | null;
+    latestPlaying: {
+      songId: string | null;
+      playStatus: "PLAY" | "PAUSE" | "UNKNOWN";
+      progress: number;
+    } | null;
+  };
+
+  internals.roomId = "room";
+  internals.latestPlaying = {
+    songId: "22",
+    playStatus: "PLAY",
+    progress: 10_000,
+  };
+  internals.client.getTogetherPlaylist = async () => ({
+    displayList: ["11", "22", "33"],
+    randomList: ["33", "11", "22"],
+    playMode: "ORDER_LOOP",
+    versions: [],
+  });
+  internals.client.getSongDetailsMany = async (songIds) => songIds.map((id) => ({
+    id,
+    name: `song-${id}`,
+    artist: `artist-${id}`,
+    durationMs: Number(id) * 1000,
+    album: { id: `album-${id}`, name: `album ${id}` },
+  }));
+
+  const snapshot = await worker.getQueueSnapshot();
+
+  assert.equal(snapshot.inRoom, true);
+  assert.equal(snapshot.currentSongId, "22");
+  assert.equal(snapshot.currentPosition, 2);
+  assert.equal(snapshot.current?.name, "song-22");
+  assert.equal(snapshot.upNext?.id, "33");
+  assert.deepEqual(snapshot.displayOrder.map((item) => item.id), ["11", "22", "33"]);
+  assert.deepEqual(snapshot.pending.map((item) => item.id), ["33", "11"]);
+  assert.deepEqual(snapshot.pending.map((item) => item.pendingPosition), [1, 2]);
+  assert.equal(snapshot.pending[0]?.album?.name, "album 33");
+  assert.equal(snapshot.willLoop, true);
+  assert.equal(snapshot.total, 3);
+  assert.equal(snapshot.pendingCount, 2);
+});
+
 test("ENQUEUE_NEXT rewrites ORDER_LOOP displayList and confirms adjacency plus version", async () => {
   const worker = new TogetherWorker({
     cookie: "",

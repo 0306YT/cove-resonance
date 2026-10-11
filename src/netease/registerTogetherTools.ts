@@ -5,8 +5,44 @@ import { listenerWakeHub } from "../listenerWake.js";
 import type { InMemoryEventQueue } from "../queue.js";
 import { normalizeReplyBubbles } from "../replyBubbles.js";
 import type { BridgeEvent } from "../types.js";
+import { neteaseAccountProfileSchema, neteaseSongSchema } from "./accountTools.js";
 import type { PlaybackStateStore } from "./playbackState.js";
 import type { TogetherWorker } from "./togetherWorker.js";
+
+const togetherQueueItemSchema = neteaseSongSchema.extend({
+  displayPosition: z.number().int().positive(),
+  pendingPosition: z.number().int().positive().nullable(),
+  isCurrent: z.boolean(),
+});
+
+const togetherQueueSchema = z.object({
+  inRoom: z.boolean(),
+  roomId: z.string().nullable(),
+  playMode: z.string().nullable(),
+  currentSongId: z.string().nullable(),
+  currentPosition: z.number().int().positive().nullable(),
+  total: z.number().int().nonnegative(),
+  pendingCount: z.number().int().nonnegative(),
+  willLoop: z.boolean(),
+  current: togetherQueueItemSchema.nullable(),
+  upNext: togetherQueueItemSchema.nullable(),
+  displayOrder: z.array(togetherQueueItemSchema),
+  pending: z.array(togetherQueueItemSchema),
+  randomOrderSongIds: z.array(z.string()),
+  fetchedAt: z.string(),
+});
+
+const chatMessageSchema = z.object({
+  type: z.literal("chatroom_message"),
+  category: z.enum(["text", "custom", "robot", "notification", "other"]),
+  msgType: z.number().nullable(),
+  senderId: z.string().nullable(),
+  senderNick: z.string().nullable(),
+  text: z.string().nullable(),
+  messageId: z.string().nullable(),
+  timetagMs: z.number().nullable(),
+  receivedAtMs: z.number(),
+});
 
 export function registerNeteaseTogetherTools(
   server: McpServer,
@@ -19,19 +55,13 @@ export function registerNeteaseTogetherTools(
     "netease_together_now",
     {
       title: "NetEase Together now",
-      description: "Read the latest cached NetEase Listen Together playback state and nearby lyrics.",
+      description: "Read the latest NetEase Listen Together playback state, nearby lyrics, Cove account avatar/profile, and the fully resolved current/pending queue.",
       inputSchema: {},
       outputSchema: {
         inRoom: z.boolean(),
         roomId: z.string().optional(),
         playStatus: z.enum(["PLAY", "PAUSE", "UNKNOWN"]),
-        song: z.object({
-          id: z.string(),
-          name: z.string(),
-          artist: z.string(),
-          durationMs: z.number(),
-          coverUrl: z.string().optional(),
-        }).optional(),
+        song: neteaseSongSchema.optional(),
         progressMs: z.number(),
         durationMs: z.number(),
         progressRatio: z.number(),
@@ -42,18 +72,56 @@ export function registerNeteaseTogetherTools(
         }).optional(),
         observedAt: z.string().nullable(),
         stateUpdatedAt: z.string(),
+        accountProfile: neteaseAccountProfileSchema.nullable(),
+        queue: togetherQueueSchema.nullable(),
+        queueError: z.string().nullable(),
       },
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
-        openWorldHint: false,
+        openWorldHint: true,
       },
     },
     async () => {
       const state = playbackState.getCurrentState();
+      let queueSnapshot = null;
+      let queueError: string | null = null;
+      try {
+        queueSnapshot = await togetherWorker.getQueueSnapshot();
+      } catch (error) {
+        queueError = error instanceof Error ? error.message : "Unable to read NetEase Together queue";
+      }
+      const result = {
+        ...state,
+        accountProfile: togetherWorker.getAccountProfile(),
+        queue: queueSnapshot,
+        queueError,
+      };
       return {
-        structuredContent: state,
-        content: [{ type: "text", text: JSON.stringify(state) }],
+        structuredContent: result,
+        content: [{ type: "text", text: JSON.stringify(result) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "netease_together_queue",
+    {
+      title: "NetEase Together queue",
+      description: "Read the authoritative Listen Together playlist and resolve complete metadata for the current song, full display order, and every pending song in next-play order.",
+      inputSchema: {},
+      outputSchema: togetherQueueSchema.shape,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: true,
+      },
+    },
+    async () => {
+      const result = await togetherWorker.getQueueSnapshot();
+      return {
+        structuredContent: result,
+        content: [{ type: "text", text: JSON.stringify(result) }],
       };
     },
   );
@@ -62,7 +130,7 @@ export function registerNeteaseTogetherTools(
     "netease_together_realtime_status",
     {
       title: "NetEase Together realtime status",
-      description: "Read the NIM realtime connection status plus the latest cached playback event and ChatRoom message. Never returns NetEase credentials.",
+      description: "Read the NIM realtime connection status, latest playback/chat/text events, latest sent reply, Cove avatar/profile, and Bridge reply state. Never returns NetEase credentials.",
       inputSchema: {},
       outputSchema: {
         enabled: z.boolean(),
@@ -82,17 +150,19 @@ export function registerNeteaseTogetherTools(
           clientSeq: z.number().optional(),
           senderId: z.string().optional(),
         }).nullable(),
-        lastChatMessage: z.object({
-          type: z.literal("chatroom_message"),
-          category: z.enum(["text", "custom", "robot", "notification", "other"]),
-          msgType: z.number().nullable(),
-          senderId: z.string().nullable(),
-          senderNick: z.string().nullable(),
-          text: z.string().nullable(),
-          messageId: z.string().nullable(),
-          timetagMs: z.number().nullable(),
-          receivedAtMs: z.number(),
+        lastChatMessage: chatMessageSchema.nullable(),
+        lastTextMessage: chatMessageSchema.nullable(),
+        lastSentMessage: z.object({
+          messageId: z.string(),
+          text: z.string(),
+          sentAtMs: z.number(),
         }).nullable(),
+        accountProfile: neteaseAccountProfileSchema.nullable(),
+        bridgeReply: z.object({
+          pending: z.boolean(),
+          eventId: z.string().nullable(),
+          createdAt: z.string().nullable(),
+        }),
         lastError: z.string().nullable(),
       },
       annotations: {
@@ -103,9 +173,19 @@ export function registerNeteaseTogetherTools(
     },
     async () => {
       const state = togetherWorker.getRealtimeStatus();
+      const outstanding = queue.getOutstandingRequiredReplyEvent(eventFilter);
+      const result = {
+        ...state,
+        accountProfile: togetherWorker.getAccountProfile(),
+        bridgeReply: {
+          pending: Boolean(outstanding),
+          eventId: outstanding?.id ?? null,
+          createdAt: outstanding?.createdAt ?? null,
+        },
+      };
       return {
-        structuredContent: state,
-        content: [{ type: "text", text: JSON.stringify(state) }],
+        structuredContent: result,
+        content: [{ type: "text", text: JSON.stringify(result) }],
       };
     },
   );
@@ -298,6 +378,7 @@ export function registerNeteaseTogetherTools(
         messageId: z.string(),
         text: z.string(),
         code: z.number(),
+        sentAtMs: z.number(),
       },
       annotations: {
         readOnlyHint: false,

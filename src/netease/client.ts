@@ -24,8 +24,14 @@ export type AccountPlaylist = {
   name: string;
   trackCount: number;
   creatorId: string | null;
+  creatorName: string | null;
   owned: boolean;
   privacy: number | null;
+  coverUrl: string | null;
+  description: string | null;
+  subscribed: boolean;
+  playCount: number | null;
+  updateTimeMs: number | null;
 };
 
 export type PlayHistoryRecord = {
@@ -100,6 +106,13 @@ function readLyric(body: JsonRecord, field: string): string | null {
   return readString(asRecord(body[field]).lyric);
 }
 
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(readString)
+    .filter((item): item is string => Boolean(item));
+}
+
 function parseSong(value: unknown): SongDetails | null {
   const song = asRecord(value);
   const id = readString(song.id);
@@ -110,20 +123,48 @@ function parseSong(value: unknown): SongDetails | null {
     : Array.isArray(song.artists)
       ? song.artists
       : [];
-  const artist = rawArtists
-    .map((item) => readString(asRecord(item).name))
-    .filter((name): name is string => Boolean(name))
-    .join(" / ");
+  const artists = rawArtists.flatMap((item) => {
+    const raw = asRecord(item);
+    const name = readString(raw.name);
+    return name ? [{ id: readString(raw.id), name }] : [];
+  });
 
-  const coverUrl = readString(asRecord(song.al).picUrl)
-    ?? readString(asRecord(song.album).picUrl);
+  const album = Object.keys(asRecord(song.al)).length
+    ? asRecord(song.al)
+    : asRecord(song.album);
+  const coverUrl = readString(album.picUrl);
+  const albumId = readString(album.id);
+  const albumName = readString(album.name);
+  const aliases = readStringArray(song.alia).length
+    ? readStringArray(song.alia)
+    : readStringArray(song.alias);
+  const translatedNames = readStringArray(song.tns).length
+    ? readStringArray(song.tns)
+    : readStringArray(song.transNames);
+  const mvId = readString(song.mv);
 
   return {
     id,
     name: readString(song.name) ?? `歌曲 ${id}`,
-    artist: artist || "未知歌手",
+    artist: artists.map((item) => item.name).join(" / ") || "未知歌手",
     durationMs: Math.max(0, readNumber(song.dt) ?? readNumber(song.duration) ?? 0),
     ...(coverUrl ? { coverUrl } : {}),
+    ...(albumId || albumName || coverUrl
+      ? {
+          album: {
+            id: albumId,
+            name: albumName,
+            ...(coverUrl ? { coverUrl } : {}),
+          },
+        }
+      : {}),
+    ...(artists.length ? { artists } : {}),
+    ...(aliases.length ? { aliases } : {}),
+    ...(translatedNames.length ? { translatedNames } : {}),
+    mvId: mvId && mvId !== "0" ? mvId : null,
+    fee: readNumber(song.fee),
+    trackNumber: readNumber(song.no),
+    disc: readString(song.cd),
   };
 }
 
@@ -190,33 +231,40 @@ export class NeteaseClient {
       .slice(0, limit);
   }
 
-  async listOwnPlaylists(limit = 50): Promise<AccountPlaylist[]> {
+  async listOwnPlaylists(limit = 1000, offset = 0): Promise<AccountPlaylist[]> {
     const accountId = await this.getAccountId();
     const body = await this.call("user_playlist", {
       uid: accountId,
       limit,
-      offset: 0,
+      offset,
     });
     const playlists = Array.isArray(body.playlist) ? body.playlist : [];
     return playlists.map((value) => {
       const playlist = asRecord(value);
-      const creatorId = readString(asRecord(playlist.creator).userId);
+      const creator = asRecord(playlist.creator);
+      const creatorId = readString(creator.userId);
       return {
         id: readString(playlist.id) ?? "",
         name: readString(playlist.name) ?? "未命名歌单",
         trackCount: Math.max(0, readNumber(playlist.trackCount) ?? 0),
         creatorId,
+        creatorName: readString(creator.nickname),
         owned: creatorId === accountId,
         privacy: readNumber(playlist.privacy),
+        coverUrl: readString(playlist.coverImgUrl),
+        description: readString(playlist.description),
+        subscribed: playlist.subscribed === true,
+        playCount: readNumber(playlist.playCount),
+        updateTimeMs: readNumber(playlist.updateTime),
       };
     }).filter((playlist) => Boolean(playlist.id));
   }
 
-  async getPlaylistTracks(playlistId: string, limit = 50): Promise<SongDetails[]> {
+  async getPlaylistTracks(playlistId: string, limit = 1000, offset = 0): Promise<SongDetails[]> {
     const body = await this.call("playlist_track_all", {
       id: playlistId,
       limit,
-      offset: 0,
+      offset,
     });
     const songs = Array.isArray(body.songs)
       ? body.songs
@@ -462,14 +510,35 @@ export class NeteaseClient {
     });
   }
 
-  async getSongDetails(songId: string): Promise<SongDetails> {
-    const body = await this.call("song_detail", { ids: songId });
-    const songs = Array.isArray(body.songs) ? body.songs : [];
-    const song = parseSong(songs[0]);
-    if (!song) {
-      return { id: songId, name: `歌曲 ${songId}`, artist: "未知歌手", durationMs: 0 };
+  async getSongDetailsMany(songIds: string[]): Promise<SongDetails[]> {
+    const normalizedIds = songIds
+      .map((songId) => songId.trim())
+      .filter((songId) => /^\d+$/.test(songId));
+    if (!normalizedIds.length) return [];
+
+    const detailsById = new Map<string, SongDetails>();
+    const uniqueIds = [...new Set(normalizedIds)];
+    for (let offset = 0; offset < uniqueIds.length; offset += 1000) {
+      const ids = uniqueIds.slice(offset, offset + 1000);
+      const body = await this.call("song_detail", { ids: ids.join(",") });
+      const songs = Array.isArray(body.songs) ? body.songs : [];
+      for (const value of songs) {
+        const song = parseSong(value);
+        if (song) detailsById.set(song.id, song);
+      }
     }
-    return song;
+
+    return normalizedIds.map((songId) => detailsById.get(songId) ?? {
+      id: songId,
+      name: `歌曲 ${songId}`,
+      artist: "未知歌手",
+      durationMs: 0,
+    });
+  }
+
+  async getSongDetails(songId: string): Promise<SongDetails> {
+    const [song] = await this.getSongDetailsMany([songId]);
+    return song ?? { id: songId, name: `歌曲 ${songId}`, artist: "未知歌手", durationMs: 0 };
   }
 
   async getLyrics(songId: string): Promise<RawLyrics> {

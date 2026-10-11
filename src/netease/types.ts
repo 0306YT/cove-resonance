@@ -39,6 +39,21 @@ export type SongDetails = {
   artist: string;
   durationMs: number;
   coverUrl?: string;
+  album?: {
+    id: string | null;
+    name: string | null;
+    coverUrl?: string;
+  };
+  artists?: Array<{
+    id: string | null;
+    name: string;
+  }>;
+  aliases?: string[];
+  translatedNames?: string[];
+  mvId?: string | null;
+  fee?: number | null;
+  trackNumber?: number | null;
+  disc?: string | null;
 };
 
 export type RawLyrics = {

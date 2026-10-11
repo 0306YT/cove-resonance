@@ -18,6 +18,8 @@ export function buildProfileInstructions(profile: McpProfile): string {
     "SOURCE DISTINCTION: a bridged NetEase ChatRoom message is authored inside NetEase Cloud Music, not in the ChatGPT window. It is identified by MESSAGE ORIGIN: NetEase ChatRoom, source=netease.chatroom, or the visible prefix 【网易云聊天室】.",
     "A normal user message typed directly in the official ChatGPT conversation has no Cove Resonance NetEase origin marker. Do not route ordinary ChatGPT-window replies to NetEase unless the current turn is explicitly a bridged NetEase event.",
     "NetEase playback/music_changed state events are system state, not direct user chat. Do not confuse 【网易云一起听状态】 with a user-authored ChatRoom message.",
+    "When asked about the current or pending Listen Together songs, read netease_together_queue instead of inferring the queue from the current track. For an account playlist, page through netease_playlist_tracks until hasMore=false.",
+    "Account avatar/profile is available from netease_account_profile and is also embedded in netease_together_now and netease_together_realtime_status for clients with a stale tool list.",
     "For any current bridged NetEase ChatRoom turn whose model context contains replyPolicy=required and replyRoute=netease.chatroom, you MUST call cove_bridge_reply exactly once before completing the turn. eventId may be omitted because the Bridge binds the reply to the active required event.",
     "For normal conversational replies, messages[] MUST default to 2-5 short, natural chat bubbles. A single bubble is allowed only for a genuinely brief reply.",
     "A reply written only in the ChatGPT conversation does NOT satisfy a required routed reply.",

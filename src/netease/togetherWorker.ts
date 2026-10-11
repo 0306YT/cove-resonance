@@ -54,6 +54,29 @@ export type QueueMutationResult = {
   confirmedAt: string;
 };
 
+export type TogetherQueueItem = SongDetails & {
+  displayPosition: number;
+  pendingPosition: number | null;
+  isCurrent: boolean;
+};
+
+export type TogetherQueueSnapshot = {
+  inRoom: boolean;
+  roomId: string | null;
+  playMode: string | null;
+  currentSongId: string | null;
+  currentPosition: number | null;
+  total: number;
+  pendingCount: number;
+  willLoop: boolean;
+  current: TogetherQueueItem | null;
+  upNext: TogetherQueueItem | null;
+  displayOrder: TogetherQueueItem[];
+  pending: TogetherQueueItem[];
+  randomOrderSongIds: string[];
+  fetchedAt: string;
+};
+
 type PendingPlaybackControl = {
   commandType: "PLAY" | "PAUSE" | "GOTO";
   roomId: string;
@@ -125,6 +148,103 @@ export class TogetherWorker {
 
   getRealtimeStatus(): RealtimeTransportStatus {
     return this.realtime.getStatus();
+  }
+
+  getAccountProfile(): AccountProfile | null {
+    return this.accountProfile ? { ...this.accountProfile } : null;
+  }
+
+  async getQueueSnapshot(): Promise<TogetherQueueSnapshot> {
+    const roomId = this.roomId;
+    if (!roomId) {
+      return {
+        inRoom: false,
+        roomId: null,
+        playMode: null,
+        currentSongId: null,
+        currentPosition: null,
+        total: 0,
+        pendingCount: 0,
+        willLoop: false,
+        current: null,
+        upNext: null,
+        displayOrder: [],
+        pending: [],
+        randomOrderSongIds: [],
+        fetchedAt: new Date().toISOString(),
+      };
+    }
+
+    const playlist = await this.client.getTogetherPlaylist(roomId);
+    const details = await this.client.getSongDetailsMany(playlist.displayList);
+    if (this.roomId !== roomId) {
+      throw new Error("NetEase Listen Together room changed while reading the queue; retry.");
+    }
+
+    const currentSongId = this.latestPlaying?.songId ?? this.status.currentSong?.id ?? null;
+    const currentDisplayIndex = currentSongId === null
+      ? -1
+      : playlist.displayList.indexOf(currentSongId);
+    const detailsById = new Map(details.map((song) => [song.id, song]));
+    const baseItems = playlist.displayList.map((songId, index) => ({
+      ...(detailsById.get(songId) ?? {
+        id: songId,
+        name: `歌曲 ${songId}`,
+        artist: "未知歌手",
+        durationMs: 0,
+      }),
+      displayPosition: index + 1,
+      pendingPosition: null,
+      isCurrent: index === currentDisplayIndex,
+    } satisfies TogetherQueueItem));
+
+    const randomMode = /RANDOM|SHUFFLE/i.test(playlist.playMode ?? "");
+    const activeIds = randomMode && playlist.randomList.length
+      ? playlist.randomList
+      : playlist.displayList;
+    const activeItems = activeIds.flatMap((songId) => {
+      const item = baseItems.find((candidate) => candidate.id === songId);
+      return item ? [item] : [];
+    });
+    const activeCurrentIndex = currentSongId === null
+      ? -1
+      : activeItems.findIndex((item) => item.id === currentSongId);
+    const willLoop = /LOOP/i.test(playlist.playMode ?? "");
+    const pendingBase = activeCurrentIndex < 0
+      ? activeItems
+      : [
+          ...activeItems.slice(activeCurrentIndex + 1),
+          ...(willLoop ? activeItems.slice(0, activeCurrentIndex) : []),
+        ];
+    const pendingPositionByDisplayPosition = new Map(
+      pendingBase.map((item, index) => [item.displayPosition, index + 1]),
+    );
+    const displayOrder = baseItems.map((item) => ({
+      ...item,
+      pendingPosition: pendingPositionByDisplayPosition.get(item.displayPosition) ?? null,
+    }));
+    const pending = pendingBase.map((item, index) => ({
+      ...item,
+      pendingPosition: index + 1,
+    }));
+    const current = currentDisplayIndex >= 0 ? displayOrder[currentDisplayIndex] ?? null : null;
+
+    return {
+      inRoom: true,
+      roomId,
+      playMode: playlist.playMode,
+      currentSongId,
+      currentPosition: currentDisplayIndex >= 0 ? currentDisplayIndex + 1 : null,
+      total: displayOrder.length,
+      pendingCount: pending.length,
+      willLoop,
+      current,
+      upNext: pending[0] ?? null,
+      displayOrder,
+      pending,
+      randomOrderSongIds: [...playlist.randomList],
+      fetchedAt: new Date().toISOString(),
+    };
   }
 
   async sendChatRoomText(text: string): Promise<RealtimeChatSendResult> {

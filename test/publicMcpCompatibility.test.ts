@@ -64,7 +64,9 @@ test("legacy /mcp and scoped /mcp/music both initialize", async () => {
 test("legacy and scoped endpoints both keep the Music V2 tool surface", async () => {
   const required = [
     "netease_account_profile",
+    "netease_song_details",
     "netease_together_now",
+    "netease_together_queue",
     "netease_together_realtime_status",
     "netease_together_leave",
     "netease_together_pause",

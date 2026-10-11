@@ -49,7 +49,15 @@ export type RealtimeTransportStatus = {
   credentialsReady: boolean;
   lastPlaybackEvent: RealtimePlaybackEvent | null;
   lastChatMessage: RealtimeChatRoomMessage | null;
+  lastTextMessage: RealtimeChatRoomMessage | null;
+  lastSentMessage: RealtimeSentChatMessage | null;
   lastError: string | null;
+};
+
+export type RealtimeSentChatMessage = {
+  messageId: string;
+  text: string;
+  sentAtMs: number;
 };
 
 export type RealtimeChatSendResult = {
@@ -59,6 +67,7 @@ export type RealtimeChatSendResult = {
   messageId: string;
   text: string;
   code: number;
+  sentAtMs: number;
 };
 
 export type RealtimeMemberProfile = {
@@ -499,6 +508,8 @@ export class NeteaseRealtimeTransport {
       credentialsReady: false,
       lastPlaybackEvent: null,
       lastChatMessage: null,
+      lastTextMessage: null,
+      lastSentMessage: null,
       lastError: null,
     };
   }
@@ -511,6 +522,12 @@ export class NeteaseRealtimeTransport {
         : null,
       lastChatMessage: this.status.lastChatMessage
         ? { ...this.status.lastChatMessage }
+        : null,
+      lastTextMessage: this.status.lastTextMessage
+        ? { ...this.status.lastTextMessage }
+        : null,
+      lastSentMessage: this.status.lastSentMessage
+        ? { ...this.status.lastSentMessage }
         : null,
     };
   }
@@ -676,6 +693,9 @@ export class NeteaseRealtimeTransport {
     const message = decodeRealtimeChatRoomMessage(raw, receivedAtMs);
     if (!message) return;
     this.status.lastChatMessage = message;
+    if (message.category === "text" && message.text) {
+      this.status.lastTextMessage = message;
+    }
     const sender = message.senderId ? `***${message.senderId.slice(-4)}` : "unknown";
     const messageId = message.messageId ? `***${message.messageId.slice(-6)}` : "unknown";
     const textPreview = message.category === "text" && message.text
@@ -732,6 +752,8 @@ export class NeteaseRealtimeTransport {
       credentialsReady: true,
       lastPlaybackEvent: this.status.lastPlaybackEvent,
       lastChatMessage: this.status.lastChatMessage,
+      lastTextMessage: this.status.lastTextMessage,
+      lastSentMessage: this.status.lastSentMessage,
       lastError: null,
     };
 
@@ -858,6 +880,12 @@ export class NeteaseRealtimeTransport {
     console.log(
       `NetEase ChatRoom message sent via V2: messageId=***${messageId.slice(-6)} textLength=${normalized.length}`,
     );
+    const sentAtMs = Date.now();
+    this.status.lastSentMessage = {
+      messageId,
+      text: normalized,
+      sentAtMs,
+    };
     return {
       ok: true,
       roomId,
@@ -865,6 +893,7 @@ export class NeteaseRealtimeTransport {
       messageId,
       text: normalized,
       code: 200,
+      sentAtMs,
     };
   }
 

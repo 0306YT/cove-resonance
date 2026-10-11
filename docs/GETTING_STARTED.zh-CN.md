@@ -516,6 +516,7 @@ netease_together_resume
 netease_together_goto
 netease_together_next
 netease_together_enqueue_next
+netease_together_queue
 ```
 
 PAUSE / RESUME / GOTO 不会把“HTTP report 成功”直接当成播放成功。Bridge 会等待匹配的 NIM realtime 事件，并校验 `clientSeq`、`serverSeq`、发送者和目标歌曲。
@@ -523,6 +524,8 @@ PAUSE / RESUME / GOTO 不会把“HTTP report 成功”直接当成播放成功�
 `GOTO` 只允许切到当前 Together `displayList` 中已经存在的歌曲；如果目标不在列表里，会要求先 enqueue，避免假成功。
 
 `ENQUEUE_NEXT` 修改队列后会重新读取 Together playlist，只有确认目标歌曲紧跟当前歌曲、且队列版本符合预期，才返回成功。
+
+`netease_together_queue` 是只读工具，会读取权威 Together playlist，并解析当前曲、下一首、完整展示顺序以及一轮循环内的全部待播歌曲。`netease_together_now` 也会附带同一份队列快照、账号头像和队列读取错误，兼容尚未刷新工具列表的客户端。
 
 ---
 
