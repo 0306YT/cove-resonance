@@ -11,7 +11,7 @@ type BootstrapRequest = {
 type NimClientLike = {
   init(appKey: string, appDataDir: string, appInstallDir: string, config: Record<string, unknown>): boolean;
   initEventHandlers(): void;
-  login(appKey: string, account: string, password: string, cb: null, extension: string): Promise<[unknown]>;
+  login(appKey: string, account: string, password: string, cb: ((result: unknown) => void) | null, extension: string): Promise<[unknown]>;
 };
 
 type NimPluginLike = {
@@ -76,7 +76,14 @@ async function run(request: BootstrapRequest): Promise<[number, string]> {
       request.appKey,
       request.accId,
       request.token,
-      null,
+      (result) => {
+        const value = asRecord(result);
+        console.error(
+          "NIM login callback: code=" + String(readNumber(value.res_code_))
+          + " step=" + String(readNumber(value.login_step_))
+          + " retrying=" + String(value.retrying_ ?? ""),
+        );
+      },
       "",
     ),
     12_000,
