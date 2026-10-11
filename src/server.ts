@@ -36,9 +36,12 @@ function probeTcp(label: string, host: string, port: number, timeoutMs = 5_000):
 }
 
 function runNimNetworkProbes(): void {
-  probeTcp("link-host", "link.netease.im", 8080);
-  probeTcp("link-ip-a", "47.251.17.96", 8080);
-  probeTcp("link-ip-b", "198.11.180.194", 8080);
+  probeTcp("link-host-8080", "link.netease.im", 8080);
+  probeTcp("link-ip-a-8080", "47.251.17.96", 8080);
+  probeTcp("link-ip-b-8080", "198.11.180.194", 8080);
+  probeTcp("link-host-443", "link.netease.im", 443);
+  probeTcp("link-ip-a-443", "47.251.17.96", 443);
+  probeTcp("link-ip-b-443", "198.11.180.194", 443);
   probeTcp("https-control", "music.163.com", 443);
 }
 
