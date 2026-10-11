@@ -32,9 +32,25 @@ function readNumber(value: unknown): number | null {
   return Number.isFinite(number) ? number : null;
 }
 
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label)), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function run(request: BootstrapRequest): Promise<[number, string]> {
   await mkdir(request.dataDir, { recursive: true });
-  const imported = await import("node-nim");
+  const imported = await withTimeout(import("node-nim"), 5_000, "NIM module import timed out");
   const candidate = (imported as { default?: unknown }).default ?? imported;
   const nim = candidate as Partial<NodeNimModule>;
   if (typeof nim.NIMClient !== "function" || typeof nim.NIMPlugin !== "function") {
@@ -55,19 +71,27 @@ async function run(request: BootstrapRequest): Promise<[number, string]> {
   client.initEventHandlers();
   plugin.initEventHandlers();
 
-  const [loginResult] = await client.login(
-    request.appKey,
-    request.accId,
-    request.token,
-    null,
-    "",
+  const [loginResult] = await withTimeout(
+    client.login(
+      request.appKey,
+      request.accId,
+      request.token,
+      null,
+      "",
+    ),
+    12_000,
+    "NIM login timed out",
   );
   const loginCode = readNumber(asRecord(loginResult).res_code_);
   if (loginCode !== 200) {
     throw new Error("NIM login failed" + (loginCode === null ? "" : " code=" + loginCode));
   }
 
-  return await plugin.chatRoomRequestEnterAsync(request.roomNumber, null, "");
+  return await withTimeout(
+    plugin.chatRoomRequestEnterAsync(request.roomNumber, null, ""),
+    12_000,
+    "NIM chatroom ticket request timed out",
+  );
 }
 
 let started = false;
