@@ -365,6 +365,13 @@ export class NeteaseClient {
     }
 
     const data = asRecord(body.data);
+    const credentialShape = Object.fromEntries(
+      Object.entries(data).map(([key, value]) => [
+        key,
+        Array.isArray(value) ? `array(${value.length})` : typeof value,
+      ]),
+    );
+    console.log("NetEase realtime credential response shape:", credentialShape);
     const accId = readString(data.accId);
     const token = readString(data.token);
     const addresses = Array.isArray(data.addr)
