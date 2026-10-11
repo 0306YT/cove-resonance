@@ -542,7 +542,10 @@ export class NeteaseRealtimeTransport {
         };
 
         timeoutHandle = setTimeout(() => {
-          finish(() => reject(new Error("NIM ticket bootstrap timed out")));
+          finish(() => reject(new Error(
+            "NIM ticket bootstrap timed out"
+            + (stderr ? ` stderr=${stderr.slice(-1200)}` : ""),
+          )));
         }, BOOTSTRAP_TIMEOUT_MS);
         timeoutHandle.unref?.();
 
