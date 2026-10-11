@@ -86,7 +86,7 @@ async function run(request: BootstrapRequest): Promise<[number, string]> {
       },
       "",
     ),
-    12_000,
+    65_000,
     "NIM login timed out",
   );
   const loginCode = readNumber(asRecord(loginResult).res_code_);
