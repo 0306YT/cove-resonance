@@ -14,6 +14,7 @@ import { InMemoryEventQueue } from "./queue.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const INGEST_TOKEN = process.env.BRIDGE_INGEST_TOKEN ?? "";
+const FANQIE_INGEST_TOKEN = process.env.FANQIE_INGEST_TOKEN?.trim() ?? "";
 const UNIX_SOCKET = process.env.BRIDGE_UNIX_SOCKET?.trim() ?? "";
 const queue = new InMemoryEventQueue();
 const playbackState = new PlaybackStateStore();
@@ -43,6 +44,12 @@ const eventInput = z.object({
   text: z.string().trim().min(1).max(4000),
 });
 
+const fanqieInput = z.object({
+  eventId: z.string().trim().min(1).max(200).optional(),
+  text: z.string().trim().min(1).max(12000),
+  context: z.string().trim().max(4000).optional(),
+});
+
 function writeJson(res: ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(value));
@@ -70,6 +77,15 @@ function secretMatches(actual: string, expected: string): boolean {
   const expectedBytes = Buffer.from(expected);
   return actualBytes.length === expectedBytes.length
     && timingSafeEqual(actualBytes, expectedBytes);
+}
+
+function fanqieAuthorized(req: IncomingMessage): boolean {
+  if (!FANQIE_INGEST_TOKEN) return false;
+  const authorization = req.headers.authorization ?? "";
+  const bearerToken = authorization.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length).trim()
+    : "";
+  return secretMatches(bearerToken, FANQIE_INGEST_TOKEN);
 }
 
 function mcpAuthorized(req: IncomingMessage, url: URL, accessToken: string): boolean {
@@ -128,6 +144,36 @@ export function createHttpServer(options: { mcpAccessToken?: string } = {}) {
         return;
       }
       listenerWakeHub.subscribe(res, session.expiresAtMs);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/fanqie/events") {
+      if (!fanqieAuthorized(req)) {
+        writeJson(res, 401, { error: "unauthorized" });
+        return;
+      }
+      try {
+        const parsed = fanqieInput.safeParse(await readJson(req));
+        if (!parsed.success) {
+          writeJson(res, 400, { error: parsed.error.flatten() });
+          return;
+        }
+        const createdAt = new Date().toISOString();
+        const id = parsed.data.eventId ?? randomUUID();
+        const text = "【番茄当前屏幕】\n" + parsed.data.text;
+        const modelContext = [
+          "FANQIE OCR STATE: this is the latest OCR-visible reading screen from the user's Fanqie app.",
+          "This is screen state, not a message typed by the user.",
+          parsed.data.context ?? "",
+        ].filter(Boolean).join("\n");
+        const event = buildBridgeEvent(id, "fanqie.ocr", text, createdAt, modelContext);
+        const created = queue.enqueue(event);
+        if (created) listenerWakeHub.wake("fanqie.ocr");
+        writeJson(res, created ? 201 : 200, { ok: true, created, eventId: id });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "invalid_request";
+        writeJson(res, message === "request_too_large" ? 413 : 400, { error: message });
+      }
       return;
     }
 
