@@ -63,6 +63,7 @@ async function run(request: BootstrapRequest): Promise<[number, string]> {
     database_encrypt_key_: request.appKey,
     use_https_: true,
     sdk_log_level_: 2,
+    default_link_address_: "link.netease.im:443",
   };
 
   if (!client.init(request.appKey, request.dataDir + "/", "", config)) {
