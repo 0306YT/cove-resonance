@@ -723,6 +723,7 @@ export class NeteaseRealtimeTransport {
   }
 
   private async connectInternal(options: ConnectOptions): Promise<void> {
+    const previousChatRoomId = this.status.chatRoomId;
     this.status = {
       enabled: this.enabled,
       connected: false,
@@ -745,11 +746,11 @@ export class NeteaseRealtimeTransport {
       throw new Error("NIM V2 realtime runtime is unavailable");
     }
 
-    if (this.status.connected) {
+    if (previousChatRoomId && previousChatRoomId !== options.chatRoomId) {
       try {
         chatroom.exit();
       } catch {
-        // Best effort before entering the next room.
+        // Best effort before entering a different room.
       }
     }
 
