@@ -236,6 +236,8 @@ async function run(request: BootstrapRequest): Promise<[number, string]> {
     throw new Error("node-nim NIMClient/NIMPlugin exports are unavailable");
   }
 
+  await probeV2LoginAndChatroom(nim, request);
+
   const client = new nim.NIMClient();
   const plugin = new nim.NIMPlugin();
   const config = {
@@ -270,9 +272,6 @@ async function run(request: BootstrapRequest): Promise<[number, string]> {
   );
   const loginCode = readNumber(asRecord(loginResult).res_code_);
   if (loginCode !== 200) {
-    if (loginCode === 415) {
-      await probeV2LoginAndChatroom(nim, request);
-    }
     throw new Error("NIM login failed" + (loginCode === null ? "" : " code=" + loginCode));
   }
 
