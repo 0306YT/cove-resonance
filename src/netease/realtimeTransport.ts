@@ -1,7 +1,7 @@
 import { fork } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -112,10 +112,56 @@ type NimPluginLike = {
   chatRoomRequestEnterAsync(roomId: number, cb: null, extension: string): Promise<[number, string]>;
 };
 
+type V2LoginServiceLike = {
+  on(event: string, handler: EventHandler): unknown;
+  login(accountId: string, token: string, option: Record<string, unknown>): Promise<void>;
+  logout(): Promise<void>;
+  getLoginUser(): string;
+  getLoginStatus(): number;
+  getConnectStatus(): number;
+  getChatroomLinkAddress(roomId: string): Promise<string[]>;
+};
+
+type V2StatisticsServiceLike = {
+  on(event: string, handler: EventHandler): unknown;
+};
+
+type V2NIMClientLike = {
+  init(option: Record<string, unknown>): unknown;
+  getLoginService(): V2LoginServiceLike | null;
+  getStatisticsService(): V2StatisticsServiceLike | null;
+};
+
+type V2ChatroomServiceLike = {
+  on(event: string, handler: EventHandler): unknown;
+  sendMessage(message: Record<string, unknown>, params: Record<string, unknown>): Promise<unknown>;
+  updateSelfMemberInfo(
+    params: Record<string, unknown>,
+    antispamConfig: Record<string, unknown>,
+  ): Promise<void>;
+};
+
+type V2ChatroomClientLike = {
+  on(event: string, handler: EventHandler): unknown;
+  enter(roomId: string, params: Record<string, unknown>): Promise<unknown>;
+  exit(): void;
+  getInstanceId(): number;
+  getChatroomService(): V2ChatroomServiceLike;
+};
+
+type V2NIMChatroomClientStatic = {
+  init(option: Record<string, unknown>): unknown;
+  newInstance(): V2ChatroomClientLike;
+};
+
+type V2NIMChatroomMessageCreatorStatic = {
+  createTextMessage(text: string): Record<string, unknown> | null;
+};
+
 type NodeNimModule = {
-  ChatRoom: new () => ChatRoomLike;
-  NIMClient: new () => NimClientLike;
-  NIMPlugin: new () => NimPluginLike;
+  V2NIMClient: new () => V2NIMClientLike;
+  V2NIMChatroomClient: V2NIMChatroomClientStatic;
+  V2NIMChatroomMessageCreator: V2NIMChatroomMessageCreatorStatic;
 };
 
 type PendingEnter = {
@@ -276,7 +322,7 @@ export function decodeRealtimePlaybackEvent(
   const progress = readNumber(command.progress);
   const serverSeq = readNumber(command.serverSeq) ?? readNumber(envelope.serverSeq);
   const clientSeq = readNumber(command.clientSeq);
-  const senderId = readString(asRecord(raw).from_id_);
+  const rawMessage = asRecord(raw);\n  const senderId = readString(rawMessage.from_id_) ?? readString(rawMessage.senderId);
   return {
     type: "playback",
     serverSeq,
@@ -368,16 +414,21 @@ export function decodeRealtimeChatRoomMessage(
 ): RealtimeChatRoomMessage | null {
   const message = asRecord(raw);
   if (!Object.keys(message).length) return null;
-  const msgType = readNumber(message.msg_type_);
+  const msgType = readNumber(message.msg_type_) ?? readNumber(message.messageType);
+  const userInfo = asRecord(message.userInfoConfig);
+  const attachment = asRecord(message.attachment);
   return {
     type: "chatroom_message",
     category: chatMessageCategory(msgType),
     msgType,
-    senderId: readString(message.from_id_),
-    senderNick: readString(message.from_nick_),
-    text: extractChatText(message.msg_body_) ?? extractChatText(message.msg_attach_),
-    messageId: readString(message.client_msg_id_),
-    timetagMs: readNumber(message.timetag_),
+    senderId: readString(message.from_id_) ?? readString(message.senderId),
+    senderNick: readString(message.from_nick_) ?? readString(userInfo.senderNick),
+    text: extractChatText(message.msg_body_)
+      ?? extractChatText(message.msg_attach_)
+      ?? extractChatText(message.text)
+      ?? extractChatText(attachment.raw),
+    messageId: readString(message.client_msg_id_) ?? readString(message.messageClientId),
+    timetagMs: readNumber(message.timetag_) ?? readNumber(message.createTime),
     receivedAtMs,
   };
 }
@@ -405,24 +456,33 @@ async function loadNodeNim(): Promise<NodeNimModule> {
   const imported = await import("node-nim");
   const candidate = (imported as { default?: unknown }).default ?? imported;
   const module = candidate as Partial<NodeNimModule>;
-  if (typeof module.ChatRoom !== "function") {
-    throw new Error("node-nim ChatRoom export is unavailable");
-  }
-  if (typeof module.NIMClient !== "function" || typeof module.NIMPlugin !== "function") {
-    throw new Error("node-nim NIMClient/NIMPlugin exports are unavailable");
+  if (
+    typeof module.V2NIMClient !== "function"
+    || typeof module.V2NIMChatroomClient?.init !== "function"
+    || typeof module.V2NIMChatroomClient?.newInstance !== "function"
+    || typeof module.V2NIMChatroomMessageCreator?.createTextMessage !== "function"
+  ) {
+    throw new Error("node-nim V2 IM/ChatRoom exports are unavailable");
   }
   return module as NodeNimModule;
 }
 
+function nimErrorCode(value: unknown): number | null {
+  if (value === null || value === undefined) return 0;
+  const record = asRecord(value);
+  return readNumber(record.code) ?? readNumber(record.errorCode);
+}
+
 export class NeteaseRealtimeTransport {
-  private chatroom: ChatRoomLike | null = null;
   private runtimeReady = false;
-  private readonly pendingSends = new Map<string, PendingSend>();
-  private roomNumber: number | null = null;
+  private nim: NodeNimModule | null = null;
+  private v2Client: V2NIMClientLike | null = null;
+  private loginService: V2LoginServiceLike | null = null;
+  private chatroom: V2ChatroomClientLike | null = null;
+  private chatroomService: V2ChatroomServiceLike | null = null;
   private connecting: Promise<void> | null = null;
-  private pendingEnter: PendingEnter | null = null;
+  private activeAccountId: string | null = null;
   private activeMemberProfile: RealtimeMemberProfile | null = null;
-  private generation = 0;
   private status: RealtimeTransportStatus;
 
   constructor(
@@ -478,263 +538,180 @@ export class NeteaseRealtimeTransport {
     if (this.runtimeReady) return;
 
     const nim = await loadNodeNim();
-    const chatroom = new nim.ChatRoom();
-    console.log("NIM diag: before chatroom.init");
-    if (!chatroom.init("", "")) {
-      throw new Error("NIM chatroom initialization failed");
-    }
-    console.log("NIM diag: after chatroom.init");
-    chatroom.initEventHandlers();
+    const dataRoot = join(tmpdir(), "cove-nim-v2-runtime");
+    await mkdir(dataRoot, { recursive: true });
 
-    this.chatroom = chatroom;
-    this.installRuntimeHandlers(chatroom);
-    this.runtimeReady = true;
-    console.log("NetEase NIM ChatRoom runtime initialized once for this process");
-  }
-
-  // Isolate the short-lived IM bootstrap client in a child process.
-  // node-nim cleanup can occasionally spin a native HTTP thread on Linux and
-  // starve the whole Bridge process. The child only obtains the fresh ChatRoom
-  // enter ticket; the parent kills it afterwards so the OS tears down all
-  // native bootstrap threads without depending on SDK cleanup.
-  private async requestEnterTicket(
-    credentials: RealtimeCredentials,
-    roomNumber: number,
-  ): Promise<[number, string]> {
-    const dataDir = join(
-      tmpdir(),
-      `cove-nim-bootstrap-${process.pid}-${randomUUID()}`,
-    );
-    const compiledModule = fileURLToPath(
-      new URL("./nimTicketBootstrap.js", import.meta.url),
-    );
-    const sourceModule = fileURLToPath(
-      new URL("./nimTicketBootstrap.ts", import.meta.url),
-    );
-    const useSourceModule = !existsSync(compiledModule) && existsSync(sourceModule);
-    const modulePath = useSourceModule ? sourceModule : compiledModule;
-
-    if (!existsSync(modulePath)) {
-      throw new Error("NIM ticket bootstrap module is unavailable");
+    const client = new nim.V2NIMClient();
+    const clientInit = client.init({
+      appkey: NIM_APP_KEY,
+      appDataPath: join(dataRoot, "im"),
+      basicOption: {
+        useHttps: true,
+        useHttpdns: true,
+        sdkLogLevel: 2,
+      },
+      linkOption: {
+        linkTimeout: 8_000,
+        protocolTimeout: 10_000,
+      },
+      databaseOption: {
+        encryptionKey: NIM_APP_KEY,
+      },
+    });
+    const clientInitCode = nimErrorCode(clientInit);
+    if (clientInitCode !== 0) {
+      throw new Error(`NIM V2 client initialization failed code=${String(clientInitCode)}`);
     }
 
-    console.log("NIM diag: starting isolated bootstrap child");
-    const child = fork(modulePath, [], {
-      execArgv: useSourceModule ? ["--import", "tsx"] : [],
-      stdio: ["ignore", "ignore", "pipe", "ipc"],
+    const chatroomInit = nim.V2NIMChatroomClient.init({
+      appkey: NIM_APP_KEY,
+      appDataPath: join(dataRoot, "chatroom"),
+      basicOption: {
+        useHttps: true,
+        useHttpdns: true,
+        sdkLogLevel: 2,
+      },
+      linkOption: {
+        linkTimeout: 8_000,
+        protocolTimeout: 10_000,
+      },
+      databaseOption: {
+        encryptionKey: NIM_APP_KEY,
+      },
     });
-
-    let stderr = "";
-    child.stderr?.on("data", (chunk: Buffer | string) => {
-      stderr = (stderr + String(chunk)).slice(-2000);
-    });
-
-    try {
-      const result = await new Promise<[number, string]>((resolve, reject) => {
-        let settled = false;
-        let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-
-        const finish = (callback: () => void) => {
-          if (settled) return;
-          settled = true;
-          if (timeoutHandle) clearTimeout(timeoutHandle);
-          callback();
-        };
-
-        timeoutHandle = setTimeout(() => {
-          finish(() => reject(new Error(
-            "NIM ticket bootstrap timed out"
-            + (stderr ? ` stderr=${stderr.slice(-1200)}` : ""),
-          )));
-        }, BOOTSTRAP_TIMEOUT_MS);
-        timeoutHandle.unref?.();
-
-        child.once("error", (error) => {
-          finish(() => reject(error));
-        });
-
-        child.once("exit", (code, signal) => {
-          finish(() => reject(new Error(
-            "NIM ticket bootstrap exited before reply"
-            + ` code=${String(code)} signal=${String(signal)}`
-            + (stderr ? ` stderr=${stderr.slice(-400)}` : ""),
-          )));
-        });
-
-        child.once("message", (raw) => {
-          const message = asRecord(raw);
-          if (message.ok !== true) {
-            const childError = readString(message.error) || "NIM ticket bootstrap failed";
-            finish(() => reject(new Error(
-              childError + (stderr ? ` stderr=${stderr.slice(-1200)}` : ""),
-            )));
-            return;
-          }
-
-          const rawResult = message.result;
-          if (!Array.isArray(rawResult) || rawResult.length < 2) {
-            finish(() => reject(new Error("NIM ticket bootstrap returned an invalid result")));
-            return;
-          }
-          const code = readNumber(rawResult[0]);
-          const ticket = readString(rawResult[1]);
-          if (code === null || !ticket) {
-            finish(() => reject(new Error("NIM ticket bootstrap returned an invalid ticket")));
-            return;
-          }
-          finish(() => resolve([code, ticket]));
-        });
-
-        child.send({
-          appKey: NIM_APP_KEY,
-          dataDir,
-          accId: credentials.accId,
-          token: credentials.token,
-          roomNumber,
-        }, (error) => {
-          if (error) finish(() => reject(error));
-        });
-      });
-
-      console.log("NetEase NIM enter ticket acquired in isolated bootstrap child");
-      return result;
-    } finally {
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGKILL");
-      }
-      await new Promise<void>((resolve) => {
-        if (child.exitCode !== null || child.signalCode !== null) {
-          resolve();
-          return;
-        }
-        const timer = setTimeout(resolve, 1000);
-        timer.unref?.();
-        child.once("exit", () => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
-      await rm(dataDir, { recursive: true, force: true }).catch(() => {});
+    const chatroomInitCode = nimErrorCode(chatroomInit);
+    if (chatroomInitCode !== 0) {
+      throw new Error(`NIM V2 ChatRoom initialization failed code=${String(chatroomInitCode)}`);
     }
-  }
 
-  private installRuntimeHandlers(chatroom: ChatRoomLike): void {
-    chatroom.on("enter", (...args: unknown[]) => {
-      const room = readNumber(args[0]);
-      const step = readNumber(args[1]);
-      const code = readNumber(args[2]);
-      const pending = this.pendingEnter;
-      if (!pending || room !== pending.roomNumber || pending.generation !== this.generation) return;
-      if (step !== 5) return;
-      this.pendingEnter = null;
-      if (code === 200) pending.resolve();
-      else pending.reject(new Error(`NIM chatroom auth failed${code === null ? "" : ` code=${code}`}`));
-    });
+    const loginService = client.getLoginService();
+    if (!loginService) throw new Error("NIM V2 login service is unavailable");
 
-    chatroom.on("sendMsg", (...args: unknown[]) => {
-      const room = readNumber(args[0]);
-      const code = readNumber(args[1]);
-      const rawMessage = asRecord(args[2]);
-      const messageId = readString(rawMessage.client_msg_id_);
-      if (!messageId) return;
-      const pending = this.pendingSends.get(messageId);
-      if (!pending || room !== pending.roomNumber) return;
-      this.pendingSends.delete(messageId);
-      clearTimeout(pending.timeout);
-      if (code === 200) {
-        console.log(`NetEase ChatRoom message sent: code=200 messageId=***${messageId.slice(-6)} textLength=${pending.text.length}`);
-        pending.resolve({
-          ok: true,
-          roomId: pending.roomId,
-          chatRoomId: pending.chatRoomId,
-          messageId,
-          text: pending.text,
-          code,
-        });
-      } else {
-        pending.reject(new Error(`NIM ChatRoom send failed${code === null ? "" : ` code=${code}`}`));
-      }
-    });
+    const chatroom = nim.V2NIMChatroomClient.newInstance();
+    const chatroomService = chatroom.getChatroomService();
 
-    chatroom.on("receiveMsg", (...args: unknown[]) => {
-      const room = readNumber(args[0]);
-      if (this.roomNumber !== null && room !== this.roomNumber) return;
-      const receivedAtMs = Date.now();
-      const event = decodeRealtimePlaybackEvent(args[1], receivedAtMs);
-      if (event) {
-        this.status.lastPlaybackEvent = event;
-        console.log(
-          `NetEase realtime playback event: command=${event.commandType ?? "UNKNOWN"} songId=${event.songId ?? "unknown"} progressMs=${event.progressMs} serverSeq=${event.serverSeq ?? "unknown"} latencyAnchor=receivedAt`,
-        );
-        if (/^(1|true|on|yes)$/i.test(process.env.TOGETHER_PLAYBACK_DIAGNOSTICS?.trim() ?? "")) {
-          const diagnostic = buildPlaybackDiagnostic(args[1]);
-          if (diagnostic) {
-            console.log(`NetEase playback diagnostic: ${JSON.stringify(diagnostic)}`);
-          }
-        }
-        try {
-          this.onPlaybackEvent?.(event);
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : "unknown error";
-          console.error(`NetEase realtime playback sink failed: ${detail}`);
-        }
-        return;
-      }
-
-      const message = decodeRealtimeChatRoomMessage(args[1], receivedAtMs);
-      if (!message) return;
-      this.status.lastChatMessage = message;
-      const sender = message.senderId ? `***${message.senderId.slice(-4)}` : "unknown";
-      const messageId = message.messageId ? `***${message.messageId.slice(-6)}` : "unknown";
-      const textPreview = message.category === "text" && message.text
-        ? message.text.replace(/[\r\n\t]+/g, " ").slice(0, 80)
-        : null;
-      console.log(
-        `NetEase ChatRoom message received: category=${message.category} msgType=${message.msgType ?? "unknown"} sender=${sender} textLength=${message.text?.length ?? 0} textPreview=${textPreview === null ? "n/a" : JSON.stringify(textPreview)} messageId=${messageId}`,
-      );
-      try {
-        this.onChatMessage?.(message);
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : "unknown error";
-        console.error(`NetEase ChatRoom message sink failed: ${detail}`);
-      }
-    });
-
-    chatroom.on("exit", (...args: unknown[]) => {
-      const room = readNumber(args[0]);
-      if (this.roomNumber !== null && room !== this.roomNumber) return;
-      const reason = readNumber(args[2]) ?? readNumber(args[1]);
+    loginService.on("disconnected", (...args: unknown[]) => {
       this.status.connected = false;
-      this.status.lastError = `NIM chatroom exited${reason === null ? "" : ` reason=${reason}`}`;
+      const error = asRecord(args[0]);
+      const code = readNumber(error.code);
+      this.status.lastError = code === null
+        ? "NIM V2 IM disconnected"
+        : `NIM V2 IM disconnected code=${code}`;
+      console.warn(this.status.lastError);
+    });
+    loginService.on("connectFailed", (...args: unknown[]) => {
+      const error = asRecord(args[0]);
+      const code = readNumber(error.code);
+      this.status.lastError = code === null
+        ? "NIM V2 IM connect failed"
+        : `NIM V2 IM connect failed code=${code}`;
       console.warn(this.status.lastError);
     });
 
-    chatroom.on("linkCondition", (...args: unknown[]) => {
-      const room = readNumber(args[0]);
-      if (this.roomNumber !== null && room !== this.roomNumber) return;
-      const condition = readNumber(args[1]);
-      if (condition === 0) {
-        if (this.roomNumber !== null) this.status.connected = true;
+    chatroom.on("chatroomExited", (...args: unknown[]) => {
+      this.status.connected = false;
+      const error = asRecord(args[0]);
+      const code = readNumber(error.code);
+      this.status.lastError = code === null
+        ? "NIM V2 ChatRoom exited"
+        : `NIM V2 ChatRoom exited code=${code}`;
+      console.warn(this.status.lastError);
+    });
+    chatroom.on("chatroomKicked", (...args: unknown[]) => {
+      this.status.connected = false;
+      this.status.lastError = "NIM V2 ChatRoom kicked";
+      console.warn(this.status.lastError, args[0]);
+    });
+    chatroom.on("chatroomStatus", (...args: unknown[]) => {
+      const state = readNumber(args[0]);
+      if (state === 5 && this.status.chatRoomId) {
+        this.status.connected = true;
         this.status.lastError = null;
-        return;
-      }
-      if (condition === 1) {
-        this.status.lastError = "NIM realtime link is retrying internally";
-        console.warn(this.status.lastError);
-        return;
-      }
-      if (condition === 2) {
-        this.status.connected = false;
-        this.status.lastError = "NIM realtime link requires chatroom re-entry";
-        console.warn(this.status.lastError);
       }
     });
 
+    chatroomService.on("receiveMessages", (...args: unknown[]) => {
+      const messages = Array.isArray(args[0]) ? args[0] : [];
+      for (const raw of messages) {
+        this.handleIncomingMessage(raw);
+      }
+    });
+
+    this.nim = nim;
+    this.v2Client = client;
+    this.loginService = loginService;
+    this.chatroom = chatroom;
+    this.chatroomService = chatroomService;
+    this.runtimeReady = true;
+    console.log("NetEase NIM V2 realtime runtime initialized");
+  }
+
+  private handleIncomingMessage(raw: unknown): void {
+    const receivedAtMs = Date.now();
+    const playback = decodeRealtimePlaybackEvent(raw, receivedAtMs);
+    if (playback) {
+      this.status.lastPlaybackEvent = playback;
+      console.log(
+        `NetEase realtime playback event: command=${playback.commandType ?? "UNKNOWN"} songId=${playback.songId ?? "unknown"} progressMs=${playback.progressMs} serverSeq=${playback.serverSeq ?? "unknown"} latencyAnchor=receivedAt`,
+      );
+      try {
+        this.onPlaybackEvent?.(playback);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "unknown error";
+        console.error(`NetEase realtime playback sink failed: ${detail}`);
+      }
+    }
+
+    const message = decodeRealtimeChatRoomMessage(raw, receivedAtMs);
+    if (!message) return;
+    this.status.lastChatMessage = message;
+    const sender = message.senderId ? `***${message.senderId.slice(-4)}` : "unknown";
+    const messageId = message.messageId ? `***${message.messageId.slice(-6)}` : "unknown";
+    const textPreview = message.category === "text" && message.text
+      ? message.text.replace(/[\r\n\t]+/g, " ").slice(0, 80)
+      : null;
+    console.log(
+      `NetEase ChatRoom message received: category=${message.category} msgType=${message.msgType ?? "unknown"} sender=${sender} textLength=${message.text?.length ?? 0} textPreview=${textPreview === null ? "n/a" : JSON.stringify(textPreview)} messageId=${messageId}`,
+    );
+    try {
+      this.onChatMessage?.(message);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "unknown error";
+      console.error(`NetEase ChatRoom message sink failed: ${detail}`);
+    }
+  }
+
+  private async ensureLoggedIn(credentials: RealtimeCredentials): Promise<void> {
+    const login = this.loginService;
+    if (!login) throw new Error("NIM V2 login service is unavailable");
+
+    const alreadyLoggedIn =
+      login.getLoginStatus() === 1
+      && login.getConnectStatus() === 1
+      && login.getLoginUser() === credentials.accId;
+    if (alreadyLoggedIn) {
+      this.activeAccountId = credentials.accId;
+      return;
+    }
+
+    if (login.getLoginStatus() === 1 && login.getLoginUser() !== credentials.accId) {
+      await login.logout().catch(() => {});
+    }
+
+    await login.login(credentials.accId, credentials.token, {
+      retryCount: 3,
+      timeout: 20_000,
+    });
+    if (login.getLoginStatus() !== 1 || login.getConnectStatus() !== 1) {
+      throw new Error(
+        `NIM V2 login did not reach connected state login=${login.getLoginStatus()} connect=${login.getConnectStatus()}`,
+      );
+    }
+    this.activeAccountId = credentials.accId;
+    console.log("NetEase NIM V2 IM login succeeded");
   }
 
   private async connectInternal(options: ConnectOptions): Promise<void> {
-    const generation = ++this.generation;
-    const roomNumber = numericChatRoomId(options.chatRoomId);
     this.status = {
       enabled: this.enabled,
       connected: false,
@@ -747,159 +724,129 @@ export class NeteaseRealtimeTransport {
     };
 
     await this.ensureRuntime();
+    await this.ensureLoggedIn(options.credentials);
+
+    const login = this.loginService;
     const chatroom = this.chatroom;
-    if (!chatroom) throw new Error("NIM realtime runtime is unavailable");
+    const chatroomService = this.chatroomService;
+    if (!login || !chatroom || !chatroomService) {
+      throw new Error("NIM V2 realtime runtime is unavailable");
+    }
 
-    if (this.roomNumber !== null && this.roomNumber !== roomNumber) {
+    if (this.status.connected) {
       try {
-        chatroom.exit(this.roomNumber, "");
+        chatroom.exit();
       } catch {
-        // Best effort. Keep the native SDK alive and move to the new room.
+        // Best effort before entering the next room.
       }
     }
-    this.roomNumber = roomNumber;
 
-    const [requestCode, requestLoginData] =
-      await this.requestEnterTicket(options.credentials, roomNumber);
-    if (requestCode !== 200 || !requestLoginData) {
-      throw new Error(`NIM chatroom enter ticket failed code=${requestCode}`);
+    const links = await login.getChatroomLinkAddress(options.chatRoomId);
+    if (!links.length) throw new Error("NIM V2 ChatRoom link lookup returned no addresses");
+
+    const profile = options.memberProfile;
+    const result = await chatroom.enter(options.chatRoomId, {
+      accountId: options.credentials.accId,
+      token: options.credentials.token,
+      timeout: ENTER_TIMEOUT_MS,
+      __linkProvider: links,
+      ...(profile?.nick ? { roomNick: profile.nick.trim() } : {}),
+      ...(profile?.avatar ? { roomAvatar: profile.avatar.trim() } : {}),
+    });
+    const resultRecord = asRecord(result);
+    const room = asRecord(resultRecord.chatroom);
+    const enteredRoom = readString(room.roomId);
+    if (enteredRoom && enteredRoom !== options.chatRoomId) {
+      throw new Error(`NIM V2 entered unexpected ChatRoom ${enteredRoom}`);
     }
 
-    const entered = new Promise<void>((resolve, reject) => {
-      this.pendingEnter = { generation, roomNumber, resolve, reject };
-    });
-    const started = chatroom.enter(
-      roomNumber,
-      requestLoginData,
-      buildRealtimeChatRoomEnterInfo(options.memberProfile),
-      "",
+    if (profile?.nick || profile?.avatar) {
+      await chatroomService.updateSelfMemberInfo(
+        {
+          ...(profile.nick ? { roomNick: profile.nick.trim() } : {}),
+          ...(profile.avatar ? { roomAvatar: profile.avatar.trim() } : {}),
+          notificationEnabled: false,
+          persistence: false,
+        },
+        {},
+      );
+    }
+
+    this.activeMemberProfile = profile ?? null;
+    this.status.connected = true;
+    this.status.lastError = null;
+    console.log(
+      `NetEase NIM V2 ChatRoom connected: chatRoomId=${options.chatRoomId} links=${links.length}`,
     );
-    if (!started) {
-      this.pendingEnter = null;
-      throw new Error("NIM chatroom enter request was rejected locally");
-    }
-
-    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-    const timeout = new Promise<void>((_, reject) => {
-      timeoutHandle = setTimeout(() => reject(new Error("NIM chatroom enter timed out")), ENTER_TIMEOUT_MS);
-      timeoutHandle.unref?.();
-    });
-    try {
-      await Promise.race([entered, timeout]);
-      if (generation !== this.generation) return;
-
-      const profile = options.memberProfile;
-      if (profile?.nick || profile?.avatar) {
-        const memberUpdate: Record<string, unknown> = {
-          account_id_: options.credentials.accId,
-          ...(profile.nick ? { nick_: profile.nick.trim() } : {}),
-          ...(profile.avatar ? { avatar_: profile.avatar.trim() } : {}),
-        };
-        const [, updateCode] = await chatroom.updateMyRoomRoleAsync(
-          roomNumber,
-          memberUpdate,
-          false,
-          "",
-          null,
-          "",
-        );
-        if (updateCode !== 200) {
-          throw new Error(`NIM ChatRoom member profile update failed code=${updateCode}`);
-        }
-
-        const [, lookupCode, members] = await chatroom.getMemberInfoByIDsAsync(
-          roomNumber,
-          [options.credentials.accId],
-          null,
-          "",
-        );
-        if (lookupCode !== 200) {
-          throw new Error(`NIM ChatRoom member profile verify failed code=${lookupCode}`);
-        }
-        const ownMember = asRecord(members[0]);
-        console.log(
-          `NetEase ChatRoom member profile synced: nick=${readString(ownMember.nick_) ? "present" : "empty"} avatar=${readString(ownMember.avatar_) ? "present" : "empty"}`,
-        );
-      }
-
-      this.activeMemberProfile = options.memberProfile ?? null;
-      this.status.connected = true;
-      this.status.lastError = null;
-    } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-      if (this.pendingEnter?.generation === generation) this.pendingEnter = null;
-    }
   }
 
   async sendChatRoomText(text: string): Promise<RealtimeChatSendResult> {
-    const chatroom = this.chatroom;
-    const roomNumber = this.roomNumber;
+    if (!this.enabled) throw new Error("NetEase realtime transport is disabled");
     const roomId = this.status.roomId;
     const chatRoomId = this.status.chatRoomId;
-    if (!this.enabled) throw new Error("NetEase realtime transport is disabled");
-    if (!this.status.connected || !chatroom || roomNumber === null || !roomId || !chatRoomId) {
+    const service = this.chatroomService;
+    const nim = this.nim;
+    if (!this.status.connected || !service || !nim || !roomId || !chatRoomId) {
       throw new Error("Not connected to a NetEase ChatRoom");
     }
 
-    const messageId = randomUUID();
-    const msg = buildRealtimeChatTextMessage(text, roomId, messageId, this.activeMemberProfile ?? undefined);
     const normalized = text.trim();
+    if (!normalized) throw new Error("ChatRoom message cannot be empty");
+    if (normalized.length > MAX_CHAT_TEXT_LENGTH) {
+      throw new Error(`ChatRoom message exceeds ${MAX_CHAT_TEXT_LENGTH} characters`);
+    }
 
-    return await new Promise<RealtimeChatSendResult>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pendingSends.delete(messageId);
-        reject(new Error("NIM ChatRoom send timed out"));
-      }, SEND_TIMEOUT_MS);
-      timeout.unref?.();
-      this.pendingSends.set(messageId, { roomNumber, roomId, chatRoomId, text: normalized, timeout, resolve, reject });
+    const message = nim.V2NIMChatroomMessageCreator.createTextMessage(normalized);
+    if (!message) throw new Error("NIM V2 failed to create ChatRoom text message");
 
-      let accepted = false;
-      try {
-        accepted = chatroom.sendMsg(roomNumber, msg, "");
-      } catch (error) {
-        this.pendingSends.delete(messageId);
-        clearTimeout(timeout);
-        reject(error instanceof Error ? error : new Error("NIM ChatRoom send threw an unknown error"));
-        return;
-      }
-      if (!accepted) {
-        this.pendingSends.delete(messageId);
-        clearTimeout(timeout);
-        reject(new Error("NIM ChatRoom send request was rejected locally"));
-      }
-    });
+    const result = asRecord(await service.sendMessage(message, {
+      messageConfig: {
+        historyEnabled: true,
+        highPriority: false,
+      },
+      routeConfig: {
+        routeEnabled: true,
+      },
+      clientAntispamEnabled: false,
+    }));
+    const sent = asRecord(result.message);
+    const messageId =
+      readString(sent.messageClientId)
+      ?? readString(message.messageClientId)
+      ?? randomUUID();
+
+    console.log(
+      `NetEase ChatRoom message sent via V2: messageId=***${messageId.slice(-6)} textLength=${normalized.length}`,
+    );
+    return {
+      ok: true,
+      roomId,
+      chatRoomId,
+      messageId,
+      text: normalized,
+      code: 200,
+    };
   }
 
   async disconnect(): Promise<void> {
-    this.generation += 1;
-    for (const [messageId, pending] of this.pendingSends) {
-      clearTimeout(pending.timeout);
-      pending.reject(new Error("NIM ChatRoom disconnected before send completed"));
-      this.pendingSends.delete(messageId);
-    }
-    const pending = this.pendingEnter;
-    this.pendingEnter = null;
-    pending?.reject(new Error("NIM chatroom enter cancelled"));
-
-    const roomNumber = this.roomNumber;
-    this.roomNumber = null;
     this.status.connected = false;
     this.status.roomId = null;
     this.status.chatRoomId = null;
     this.status.credentialsReady = false;
     this.activeMemberProfile = null;
 
-    if (roomNumber !== null && this.chatroom) {
+    if (this.chatroom) {
       try {
-        this.chatroom.exit(roomNumber, "");
+        this.chatroom.exit();
       } catch {
-        // Best-effort room exit. Keep the NIM runtime initialized for reuse.
+        // Best effort. Keep the V2 IM session alive for fast re-entry.
       }
     }
   }
 
   recordConnectionError(error: unknown): void {
     this.status.connected = false;
-    this.status.lastError = error instanceof Error ? error.message : "NIM realtime connect failed";
+    this.status.lastError = error instanceof Error ? error.message : "NIM V2 realtime connect failed";
   }
 }
+
