@@ -18,6 +18,23 @@ type NimPluginLike = {
   initEventHandlers(): void;
   chatRoomRequestEnterAsync(roomId: number, cb: null, extension: string): Promise<[number, string]>;
 };
+type V2LoginServiceLike = {
+  on(event: string, handler: (...args: unknown[]) => void): unknown;
+  login(accountId: string, token: string, option: Record<string, unknown>): Promise<void>;
+  getChatroomLinkAddress(roomId: string): Promise<string[]>;
+  getConnectStatus(): unknown;
+};
+
+type V2StatisticsServiceLike = {
+  on(event: string, handler: (...args: unknown[]) => void): unknown;
+};
+
+type V2NIMClientLike = {
+  init(option: Record<string, unknown>): unknown;
+  getLoginService(): V2LoginServiceLike | null;
+  getStatisticsService(): V2StatisticsServiceLike | null;
+};
+
 type V2ChatroomClientLike = {
   on(event: string, handler: (...args: unknown[]) => void): unknown;
   enter(roomId: string, params: Record<string, unknown>): Promise<unknown>;
@@ -32,6 +49,7 @@ type V2NIMChatroomClientStatic = {
 type NodeNimModule = {
   NIMClient: new () => NimClientLike;
   NIMPlugin: new () => NimPluginLike;
+  V2NIMClient?: new () => V2NIMClientLike;
   V2NIMChatroomClient?: V2NIMChatroomClientStatic;
 };
 
@@ -63,6 +81,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
 async function probeV2DirectChatroom(
   nim: Partial<NodeNimModule>,
   request: BootstrapRequest,
+  links: string[] = [],
 ): Promise<void> {
   const v2 = nim.V2NIMChatroomClient;
   if (!v2) {
@@ -99,6 +118,7 @@ async function probeV2DirectChatroom(
         accountId: request.accId,
         token: request.token,
         timeout: 10_000,
+        ...(links.length > 0 ? { __linkProvider: links } : {}),
       }),
       12_000,
       "V2 direct chatroom enter timed out",
@@ -115,6 +135,95 @@ async function probeV2DirectChatroom(
       ? error.message
       : JSON.stringify(error).slice(0, 900);
     console.error("V2 chatroom probe: enter failed " + detail);
+  }
+}
+
+async function probeV2LoginAndChatroom(
+  nim: Partial<NodeNimModule>,
+  request: BootstrapRequest,
+): Promise<void> {
+  const V2Client = nim.V2NIMClient;
+  if (!V2Client) {
+    console.error("V2 IM probe: export unavailable");
+    await probeV2DirectChatroom(nim, request);
+    return;
+  }
+
+  const client = new V2Client();
+  const initResult = client.init({
+    appkey: request.appKey,
+    appDataPath: request.dataDir + "/v2-im/",
+    basicOption: {
+      useHttps: true,
+      useHttpdns: true,
+      sdkLogLevel: 2,
+    },
+    linkOption: {
+      linkTimeout: 6_000,
+      protocolTimeout: 8_000,
+    },
+    databaseOption: {
+      encryptionKey: request.appKey,
+    },
+  });
+  const initRecord = asRecord(initResult);
+  console.error(
+    "V2 IM probe: init code="
+    + String(readNumber(initRecord.code) ?? (initResult === null ? 0 : "unknown")),
+  );
+
+  const login = client.getLoginService();
+  const stats = client.getStatisticsService();
+  if (!login) {
+    console.error("V2 IM probe: login service unavailable");
+    return;
+  }
+
+  login.on("connectStatus", (...args: unknown[]) => {
+    console.error("V2 IM connectStatus=" + JSON.stringify(args).slice(0, 800));
+  });
+  login.on("connectFailed", (...args: unknown[]) => {
+    console.error("V2 IM connectFailed=" + JSON.stringify(args).slice(0, 900));
+  });
+  login.on("loginFailed", (...args: unknown[]) => {
+    console.error("V2 IM loginFailed=" + JSON.stringify(args).slice(0, 900));
+  });
+  stats?.on("connectRecord", (...args: unknown[]) => {
+    console.error("V2 IM connectRecord=" + JSON.stringify(args).slice(0, 1200));
+  });
+  stats?.on("lbsSingleRequestRecord", (...args: unknown[]) => {
+    console.error("V2 IM lbsRecord=" + JSON.stringify(args).slice(0, 1600));
+  });
+
+  try {
+    await withTimeout(
+      login.login(request.accId, request.token, {
+        retryCount: 1,
+        timeout: 15_000,
+      }),
+      18_000,
+      "V2 IM login timed out",
+    );
+    console.error(
+      "V2 IM probe: LOGIN SUCCESS connectStatus="
+      + JSON.stringify(login.getConnectStatus()).slice(0, 500),
+    );
+
+    const links = await withTimeout(
+      login.getChatroomLinkAddress(String(request.roomNumber)),
+      10_000,
+      "V2 chatroom link lookup timed out",
+    );
+    console.error(
+      "V2 IM probe: chatroom links count=" + String(links.length)
+      + " values=" + JSON.stringify(links).slice(0, 1200),
+    );
+    await probeV2DirectChatroom(nim, request, links);
+  } catch (error) {
+    const detail = error instanceof Error
+      ? error.message
+      : JSON.stringify(error).slice(0, 1200);
+    console.error("V2 IM probe: failed " + detail);
   }
 }
 
@@ -162,7 +271,7 @@ async function run(request: BootstrapRequest): Promise<[number, string]> {
   const loginCode = readNumber(asRecord(loginResult).res_code_);
   if (loginCode !== 200) {
     if (loginCode === 415) {
-      await probeV2DirectChatroom(nim, request);
+      await probeV2LoginAndChatroom(nim, request);
     }
     throw new Error("NIM login failed" + (loginCode === null ? "" : " code=" + loginCode));
   }
