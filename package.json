@@ -17,7 +17,7 @@
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "1.30.0",
     "NeteaseCloudMusicApi": "4.32.0",
-    "node-nim": "10.9.40",
+    "node-nim": "10.10.13",
     "zod": "4.6.5"
   },
   "devDependencies": {
