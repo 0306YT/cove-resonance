@@ -9,7 +9,7 @@ import { asRecord, readNumber, readString, type RealtimeCredentials } from "./ty
 
 const NIM_APP_KEY = "3a6a3e48f6854dfa4e4464f3bdaec3b4";
 const ENTER_TIMEOUT_MS = 15_000;
-const BOOTSTRAP_TIMEOUT_MS = 20_000;
+const BOOTSTRAP_TIMEOUT_MS = 75_000;
 const SEND_TIMEOUT_MS = 10_000;
 const MAX_CHAT_TEXT_LENGTH = 500;
 const MAX_JSON_STRING_BYTES = 65_536;
