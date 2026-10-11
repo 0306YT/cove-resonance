@@ -63,6 +63,7 @@ test("legacy /mcp and scoped /mcp/music both initialize", async () => {
 
 test("legacy and scoped endpoints both keep the Music V2 tool surface", async () => {
   const required = [
+    "netease_account_profile",
     "netease_together_now",
     "netease_together_realtime_status",
     "netease_together_leave",
@@ -99,4 +100,46 @@ test("stable widget resource URI is preserved", async () => {
       assert.equal(uris.has("ui://widget/cove-bridge.html"), true, path);
     }
   });
+});
+
+test("MCP endpoints accept the configured access token without exposing an open route", async () => {
+  const previous = process.env.NODE_ENV;
+  process.env.NODE_ENV = "test";
+  const { createHttpServer } = await import("../src/server.js");
+  if (previous === undefined) delete process.env.NODE_ENV;
+  else process.env.NODE_ENV = previous;
+
+  const server = createHttpServer({ mcpAccessToken: "test-access-token" });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const base = "http://127.0.0.1:" + address.port;
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 5, method: "tools/list", params: {} });
+    const headers = {
+      "content-type": "application/json",
+      "accept": "application/json, text/event-stream",
+    };
+
+    const openResponse = await fetch(base + "/mcp/music", { method: "POST", headers, body });
+    assert.equal(openResponse.status, 401);
+
+    const queryResponse = await fetch(
+      base + "/mcp/music?access_token=test-access-token",
+      { method: "POST", headers, body },
+    );
+    assert.equal(queryResponse.status, 200);
+
+    const headerResponse = await fetch(base + "/mcp/music", {
+      method: "POST",
+      headers: { ...headers, authorization: "Bearer test-access-token" },
+      body,
+    });
+    assert.equal(headerResponse.status, 200);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });

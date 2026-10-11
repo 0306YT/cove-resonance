@@ -77,7 +77,12 @@ test("widget is idle by default and initializes MCP Apps bridge", () => {
   assert.match(html, /ui\/message/);
   assert.match(html, /cove_bridge_listener_session/);
   assert.match(html, /new EventSource\(streamUrl\.toString\(\)\)/);
-  assert.match(html, /FALLBACK_POLL_MS = 60000/);
+  assert.match(html, /FALLBACK_POLL_MS = 12000/);
+  assert.match(html, /cove-bridge-listening-v1/);
+  assert.match(html, /if \(wasListening\(\)\) startListening\(\)/);
+  assert.match(html, /window\.addEventListener\('pageshow', restartWakeStream\)/);
+  assert.match(html, /window\.addEventListener\('online', restartWakeStream\)/);
+  assert.match(html, /document\.visibilityState === 'visible'/);
   assert.match(html, /cove-bridge-dispatched-v1/);
   assert.match(html, /cove-bridge-pending-dismissals-v1/);
   assert.match(html, /requestHumanDecision\('ui\/message'/);

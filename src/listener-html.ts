@@ -1,4 +1,4 @@
-const FALLBACK_POLL_MS = 60_000;
+export const LISTENER_FALLBACK_POLL_MS = 12_000;
 
 export function buildListenerHtml(): string {
   return `<!doctype html>
@@ -25,7 +25,7 @@ export function buildListenerHtml(): string {
 </main>
 <script>
 (() => {
-  const FALLBACK_POLL_MS = ${FALLBACK_POLL_MS};
+  const FALLBACK_POLL_MS = ${LISTENER_FALLBACK_POLL_MS};
   const pending = new Map();
   let rpcId = 0;
   let timer = 0;
@@ -35,6 +35,7 @@ export function buildListenerHtml(): string {
   let streamAbort = null;
   let streamGeneration = 0;
   let sseConnected = false;
+  const LISTENING_STORAGE_KEY = 'cove-bridge-listening-v1';
   const DISPATCHED_STORAGE_KEY = 'cove-bridge-dispatched-v1';
   const PENDING_ACK_STORAGE_KEY = 'cove-bridge-pending-acks-v1';
   const PENDING_DISMISS_STORAGE_KEY = 'cove-bridge-pending-dismissals-v1';
@@ -46,6 +47,21 @@ export function buildListenerHtml(): string {
   const statusEl = document.getElementById('status');
   const toggleEl = document.getElementById('toggle');
   const setStatus = (text) => { statusEl.textContent = text; };
+
+  function wasListening() {
+    try {
+      return localStorage.getItem(LISTENING_STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  function rememberListening(enabled) {
+    try {
+      if (enabled) localStorage.setItem(LISTENING_STORAGE_KEY, '1');
+      else localStorage.removeItem(LISTENING_STORAGE_KEY);
+    } catch {}
+  }
 
   function readStoredIds(key) {
     try {
@@ -189,6 +205,7 @@ export function buildListenerHtml(): string {
     toggleEl.disabled = false;
     toggleEl.textContent = '开始监听';
     setStatus('已挂载，尚未监听。');
+    if (wasListening()) startListening();
   }
 
   async function callTool(name, args) {
@@ -202,7 +219,7 @@ export function buildListenerHtml(): string {
     if (!listening) return;
     setStatus(sseConnected
       ? 'SSE 实时监听中，暂无新事件。'
-      : '监听中（SSE 重连中，60 秒轮询兜底）。');
+      : '监听中（SSE 重连中，12 秒轮询兜底）。');
   }
 
   async function openWakeStream(generation) {
@@ -221,7 +238,12 @@ export function buildListenerHtml(): string {
 
         await new Promise((resolve, reject) => {
           const source = new EventSource(streamUrl.toString());
-          streamAbort = { abort: () => source.close() };
+          streamAbort = {
+            abort: () => {
+              source.close();
+              resolve();
+            }
+          };
 
           const fail = () => {
             source.close();
@@ -248,7 +270,7 @@ export function buildListenerHtml(): string {
       } catch (error) {
         if (!listening || generation !== streamGeneration) return;
         const message = error && error.message ? error.message : String(error);
-        setStatus('SSE 暂时断开：' + message + '；60 秒轮询兜底，正在重连…');
+        setStatus('SSE 暂时断开：' + message + '；12 秒轮询兜底，正在重连…');
       } finally {
         if (generation === streamGeneration) {
           sseConnected = false;
@@ -387,7 +409,9 @@ export function buildListenerHtml(): string {
   }
 
   function startListening() {
+    if (listening) return;
     listening = true;
+    rememberListening(true);
     toggleEl.textContent = '停止监听';
     setStatus('正在建立 SSE 实时监听…');
     scheduleFallback();
@@ -399,6 +423,7 @@ export function buildListenerHtml(): string {
 
   function stopListening() {
     listening = false;
+    rememberListening(false);
     toggleEl.textContent = '开始监听';
     window.clearInterval(timer);
     streamGeneration += 1;
@@ -408,9 +433,27 @@ export function buildListenerHtml(): string {
     setStatus('已暂停。');
   }
 
+  function restartWakeStream() {
+    if (!listening || !bridgeReady) return;
+    streamGeneration += 1;
+    sseConnected = false;
+    if (streamAbort) streamAbort.abort();
+    streamAbort = null;
+    const generation = streamGeneration;
+    setStatus('正在恢复 SSE 实时监听…');
+    void openWakeStream(generation);
+    void syncOnce();
+  }
+
   toggleEl.addEventListener('click', () => {
     if (listening) stopListening();
     else startListening();
+  });
+
+  window.addEventListener('pageshow', restartWakeStream);
+  window.addEventListener('online', restartWakeStream);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') restartWakeStream();
   });
 
   initialize().catch((error) => {

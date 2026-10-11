@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { ServerResponse } from "node:http";
 
 const SESSION_TTL_MS = 10 * 60_000;
-const HEARTBEAT_MS = 20_000;
+const HEARTBEAT_MS = 10_000;
 
 type SessionRecord = {
   expiresAtMs: number;

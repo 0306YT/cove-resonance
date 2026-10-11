@@ -1,7 +1,7 @@
 import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { buildListenerHtml } from "../listener-html.js";
+import { buildListenerHtml, LISTENER_FALLBACK_POLL_MS } from "../listener-html.js";
 import { listenerWakeHub } from "../listenerWake.js";
 
 export const RESOURCE_URI = "ui://widget/cove-bridge.html";
@@ -84,7 +84,7 @@ export function registerBridgeApp(server: McpServer): void {
           token: session.token,
           streamUrl: PUBLIC_ORIGIN + "/listener/events",
           expiresAt: session.expiresAt,
-          fallbackPollMs: 60_000,
+          fallbackPollMs: LISTENER_FALLBACK_POLL_MS,
         },
         content: [],
       };

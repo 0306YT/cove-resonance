@@ -19,7 +19,36 @@ const playlistSchema = z.object({
   privacy: z.number().nullable(),
 });
 
+const accountProfileSchema = z.object({
+  id: z.string(),
+  nickname: z.string().nullable(),
+  avatarUrl: z.string().nullable(),
+  gender: z.number().nullable(),
+});
+
 export function registerNeteaseAccountTools(server: McpServer, client: NeteaseClient): void {
+  server.registerTool(
+    "netease_account_profile",
+    {
+      title: "Cove's NetEase account profile",
+      description: "Read Cove's own NetEase account profile, including nickname and avatar URL.",
+      inputSchema: {},
+      outputSchema: { profile: accountProfileSchema },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: true,
+      },
+    },
+    async () => {
+      const profile = await client.getAccountProfile();
+      return {
+        structuredContent: { profile },
+        content: [{ type: "text", text: JSON.stringify({ profile }) }],
+      };
+    },
+  );
+
   server.registerTool(
     "netease_search_songs",
     {

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -65,7 +65,28 @@ function authorized(req: IncomingMessage): boolean {
   return !INGEST_TOKEN || req.headers.authorization === `Bearer ${INGEST_TOKEN}`;
 }
 
-export function createHttpServer() {
+function secretMatches(actual: string, expected: string): boolean {
+  const actualBytes = Buffer.from(actual);
+  const expectedBytes = Buffer.from(expected);
+  return actualBytes.length === expectedBytes.length
+    && timingSafeEqual(actualBytes, expectedBytes);
+}
+
+function mcpAuthorized(req: IncomingMessage, url: URL, accessToken: string): boolean {
+  if (!accessToken) return true;
+  const authorization = req.headers.authorization ?? "";
+  const bearerToken = authorization.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length).trim()
+    : "";
+  const queryToken = url.searchParams.get("access_token")?.trim() ?? "";
+  return secretMatches(bearerToken || queryToken, accessToken);
+}
+
+export function createHttpServer(options: { mcpAccessToken?: string } = {}) {
+  const mcpAccessToken = options.mcpAccessToken
+    ?? process.env.MCP_ACCESS_TOKEN?.trim()
+    ?? "";
+
   return createServer(async (req, res) => {
     if (!req.url || !req.method) {
       res.writeHead(400).end("Bad Request");
@@ -139,6 +160,10 @@ export function createHttpServer() {
     if (mcpProfile && mcpMethods.has(req.method)) {
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
+      if (!mcpAuthorized(req, url, mcpAccessToken)) {
+        writeJson(res, 401, { error: "unauthorized" });
+        return;
+      }
       const server = createMcpServer(queue, playbackState, togetherWorker, mcpProfile);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
