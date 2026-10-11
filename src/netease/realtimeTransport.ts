@@ -812,6 +812,30 @@ export class NeteaseRealtimeTransport {
     const message = nim.V2NIMChatroomMessageCreator.createTextMessage(normalized);
     if (!message) throw new Error("NIM V2 failed to create ChatRoom text message");
 
+    // NetEase Music's Listen Together UI filters ChatRoom messages by the
+    // legacy extension envelope. Preserve the same payload V1 used, but map it
+    // onto the V2 message fields.
+    const legacyId = randomUUID();
+    const legacy = buildRealtimeChatTextMessage(
+      normalized,
+      roomId,
+      legacyId,
+      this.activeMemberProfile ?? undefined,
+    );
+    const legacySettings = asRecord(legacy.msg_setting_);
+    const extension = readString(legacySettings.ext_);
+    if (extension) message.serverExtension = extension;
+    message.subType = 0;
+
+    const senderNick = this.activeMemberProfile?.nick?.trim();
+    const senderAvatar = this.activeMemberProfile?.avatar?.trim();
+    if (senderNick || senderAvatar) {
+      message.userInfoConfig = {
+        ...(senderNick ? { senderNick } : {}),
+        ...(senderAvatar ? { senderAvatar } : {}),
+      };
+    }
+
     const result = asRecord(await service.sendMessage(message, {
       messageConfig: {
         historyEnabled: true,
@@ -819,6 +843,9 @@ export class NeteaseRealtimeTransport {
       },
       routeConfig: {
         routeEnabled: true,
+      },
+      antispamConfig: {
+        antispamEnabled: false,
       },
       clientAntispamEnabled: false,
     }));
