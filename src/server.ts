@@ -14,7 +14,10 @@ import { publishNeteaseNote } from "./netease/noteTools.js";
 import {
   buildMobilePrivacyRequest,
   completeMobileTask,
+  createMobileHandoff,
   enqueueMobileNote,
+  finishMobileHandoff,
+  getHandoffTask,
   getMobileTask,
   mobileResultSchema,
   nextMobileTask,
@@ -64,6 +67,35 @@ const fanqieInput = z.object({
 function writeJson(res: ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(value));
+}
+
+function writeHtml(res: ServerResponse, status: number, html: string): void {
+  res.writeHead(status, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  res.end(html);
+}
+
+function mobileScriptFor(handoffBase: string): string {
+  return `const BASE=${JSON.stringify(handoffBase)};
+async function g(path){const r=new Request(BASE+path);r.method="GET";r.timeoutInterval=30;const t=await r.loadString();if(r.response.statusCode<200||r.response.statusCode>=300)throw new Error(t);return JSON.parse(t)}
+async function p(path,b){const r=new Request(BASE+path);r.method="POST";r.timeoutInterval=30;r.headers={"Content-Type":"application/json"};r.body=JSON.stringify(b);const t=await r.loadString();if(r.response.statusCode<200||r.response.statusCode>=300)throw new Error(t);return JSON.parse(t)}
+async function h(s){const r=new Request(s.url);r.method=s.method||"POST";r.timeoutInterval=30;r.headers=s.headers||{};r.body=s.body||"";const t=await r.loadString();let j=null;try{j=JSON.parse(t)}catch{}return{status:r.response.statusCode,text:t,json:j}}
+function id(b){return String(b?.id??b?.eventId??b?.event?.id??b?.event?.eventId??"").trim()}
+async function n(title,body){const x=new Notification();x.title=title;x.body=body;await x.schedule()}
+try{
+ const q=await g("/next"); if(!q.task){await n("Cove Mobile Bridge","没有待执行任务。");Script.complete();return}
+ const task=q.task; const a=await h(task.publishRequest); const ab=a.json;
+ if(!ab||Number(ab.code)!==200){await p("/result",{taskId:task.id,ok:false,publishStatus:a.status,publishBody:ab??a.text,error:"publish_failed"});throw new Error("网易云发布失败："+(ab?.message??ab?.msg??a.text.slice(0,120)))}
+ const eid=id(ab); if(!eid)throw new Error("发布返回成功，但没有拿到笔记 ID。")
+ const pr=await p("/privacy-request",{taskId:task.id,eventId:eid,privacySetting:task.privacySetting});
+ const b=await h(pr.request); const bb=b.json; const ok=!!bb&&Number(bb.code)===200;
+ await p("/result",{taskId:task.id,ok,eventId:eid,publishStatus:a.status,publishBody:ab,privacyStatus:b.status,privacyBody:bb??b.text,error:ok?undefined:"privacy_failed"});
+ if(!ok)throw new Error("笔记已发出，但仅互关可见设置失败："+(bb?.message??bb?.msg??b.text.slice(0,120)));
+ await n("Cove Mobile Bridge","网易云笔记已从这台 iPhone 发出，并设置为仅互关可见。");
+}catch(e){await n("Cove Mobile Bridge 失败",String(e?.message??e))}
+Script.complete();`;
 }
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
@@ -251,6 +283,108 @@ export function createHttpServer(options: { mcpAccessToken?: string } = {}) {
         },
       });
       return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/ops/mobile/handoff") {
+      if (!opsAuthorized(url)) {
+        writeJson(res, 401, { error: "unauthorized" });
+        return;
+      }
+      const id = url.searchParams.get("id")?.trim() ?? "";
+      try {
+        const handoff = createMobileHandoff(id);
+        const origin = `https://${req.headers.host ?? "cove-resonance-production-d352.up.railway.app"}`;
+        writeJson(res, 200, {
+          ok: true,
+          setupUrl: origin + "/mobile/setup?handoff=" + encodeURIComponent(handoff),
+        });
+      } catch (error) {
+        writeJson(res, 400, {
+          ok: false,
+          error: error instanceof Error ? error.message : "handoff_failed",
+        });
+      }
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/mobile/setup") {
+      const handoff = url.searchParams.get("handoff")?.trim() ?? "";
+      const task = getHandoffTask(handoff);
+      if (!task) {
+        writeHtml(res, 410, "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><body style='font-family:-apple-system;padding:24px'>这个一次性入口已失效，请回到 ChatGPT 让我重新生成。</body>");
+        return;
+      }
+      const origin = `https://${req.headers.host ?? "cove-resonance-production-d352.up.railway.app"}`;
+      const code = mobileScriptFor(origin + "/mobile/handoff?handoff=" + encodeURIComponent(handoff));
+      const escaped = code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      writeHtml(res, 200, `<!doctype html><html lang=zh-CN><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Cove Mobile Bridge</title><style>body{font-family:-apple-system,system-ui;padding:20px;background:#111;color:#fff}button{font:inherit;padding:12px 16px;border:0;border-radius:12px}textarea{width:100%;height:52vh;margin-top:14px;border-radius:12px;padding:12px;background:#1d1d1f;color:#fff;border:1px solid #444}</style><h2>Cove Mobile Bridge</h2><p>点“复制脚本”，然后在 Scriptable 新建脚本并粘贴运行一次。</p><button id=b>复制脚本</button><textarea id=t readonly>${escaped}</textarea><script>b.onclick=async()=>{await navigator.clipboard.writeText(t.value);b.textContent="已复制 ✓"}</script></html>`);
+      return;
+    }
+
+    if (url.pathname.startsWith("/mobile/handoff")) {
+      const handoff = url.searchParams.get("handoff")?.trim() ?? "";
+      const task = getHandoffTask(handoff);
+      if (!task) {
+        writeJson(res, 410, { error: "expired_or_invalid_handoff" });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/mobile/handoff/next") {
+        writeJson(res, 200, {
+          ok: true,
+          task: {
+            id: task.id,
+            kind: task.kind,
+            createdAt: task.createdAt,
+            text: task.text,
+            privacySetting: task.privacySetting,
+            publishRequest: task.publishRequest,
+          },
+        });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/mobile/handoff/privacy-request") {
+        try {
+          const body = await readJson(req) as Record<string, unknown>;
+          const taskId = String(body.taskId ?? "").trim();
+          const eventId = String(body.eventId ?? "").trim();
+          const privacySetting = Number(body.privacySetting ?? 6);
+          if (taskId !== task.id || !eventId || ![0, 1, 2, 6].includes(privacySetting)) {
+            writeJson(res, 400, { error: "invalid_task_event_or_privacy" });
+            return;
+          }
+          writeJson(res, 200, {
+            ok: true,
+            request: buildMobilePrivacyRequest(eventId, privacySetting as 0 | 1 | 2 | 6),
+          });
+        } catch (error) {
+          writeJson(res, 400, {
+            ok: false,
+            error: error instanceof Error ? error.message : "invalid_request",
+          });
+        }
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/mobile/handoff/result") {
+        try {
+          const parsed = mobileResultSchema.safeParse(await readJson(req));
+          if (!parsed.success || parsed.data.taskId !== task.id) {
+            writeJson(res, 400, { error: "invalid_result" });
+            return;
+          }
+          const completed = completeMobileTask(parsed.data.taskId, parsed.data.ok, parsed.data);
+          finishMobileHandoff(handoff);
+          writeJson(res, 200, { ok: true, taskId: completed.id, state: completed.state });
+        } catch (error) {
+          writeJson(res, 400, {
+            ok: false,
+            error: error instanceof Error ? error.message : "invalid_request",
+          });
+        }
+        return;
+      }
     }
 
     if (req.method === "GET" && url.pathname === "/mobile/next") {
