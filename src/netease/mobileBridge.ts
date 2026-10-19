@@ -7,7 +7,7 @@ const neteaseCrypto = require("NeteaseCloudMusicApi/util/crypto.js") as {
   eapi: (url: string, object: Record<string, unknown>) => { params: string };
 };
 
-type PhoneTask = {
+export type PhoneTask = {
   id: string;
   kind: "netease_publish_note";
   createdAt: string;
@@ -27,6 +27,7 @@ export type MobileHttpRequest = {
 
 const tasks = new Map<string, PhoneTask>();
 const pendingOrder: string[] = [];
+const handoffs = new Map<string, { taskId: string; expiresAt: number }>();
 
 function parseCookie(cookie: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -151,6 +152,36 @@ export function nextMobileTask(): PhoneTask | null {
 
 export function getMobileTask(id: string): PhoneTask | null {
   return tasks.get(id) ?? null;
+}
+
+export function createMobileHandoff(taskId: string, ttlMs = 15 * 60 * 1000): string {
+  const task = tasks.get(taskId);
+  if (!task) throw new Error("Unknown mobile task");
+  if (task.state === "completed" || task.state === "failed") {
+    throw new Error("Mobile task is already terminal");
+  }
+  const token = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
+  handoffs.set(token, { taskId, expiresAt: Date.now() + ttlMs });
+  return token;
+}
+
+export function getHandoffTask(token: string): PhoneTask | null {
+  const entry = handoffs.get(token);
+  if (!entry) return null;
+  if (entry.expiresAt < Date.now()) {
+    handoffs.delete(token);
+    return null;
+  }
+  const task = tasks.get(entry.taskId);
+  if (!task || task.state === "completed" || task.state === "failed") {
+    handoffs.delete(token);
+    return null;
+  }
+  return task;
+}
+
+export function finishMobileHandoff(token: string): void {
+  handoffs.delete(token);
 }
 
 export function completeMobileTask(
