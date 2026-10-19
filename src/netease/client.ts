@@ -49,6 +49,10 @@ export type AccountProfile = {
   nickname: string | null;
   avatarUrl: string | null;
   gender: number | null;
+  signature: string | null;
+  birthdayMs: number | null;
+  province: number | null;
+  city: number | null;
 };
 
 export type TogetherPlaylistState = {
@@ -209,6 +213,10 @@ export class NeteaseClient {
       nickname: readString(profile.nickname),
       avatarUrl: readString(profile.avatarUrl),
       gender: readNumber(profile.gender),
+      signature: readString(profile.signature),
+      birthdayMs: readNumber(profile.birthday),
+      province: readNumber(profile.province),
+      city: readNumber(profile.city),
     };
   }
 
@@ -359,8 +367,99 @@ export class NeteaseClient {
     return this.call("msg_recentcontact");
   }
 
-  async getPrivateHistory(uid: string): Promise<JsonRecord> {
-    return this.call("msg_private_history", { uid, limit: 8 });
+  async getPrivateInbox(limit = 30, offset = 0): Promise<JsonRecord> {
+    return this.call("msg_private", { limit, offset });
+  }
+
+  async getPrivateHistory(uid: string, limit = 30, before = 0): Promise<JsonRecord> {
+    return this.call("msg_private_history", { uid, limit, before });
+  }
+
+  async sendPrivateText(userIds: string[], message: string): Promise<JsonRecord> {
+    return this.call("send_text", {
+      user_ids: userIds.join(","),
+      msg: message,
+    });
+  }
+
+  async getNotificationCounts(): Promise<JsonRecord> {
+    return this.call("pl_count");
+  }
+
+  async resolveUserIds(nicknames: string[]): Promise<JsonRecord> {
+    return this.call("get_userids", { nicknames: nicknames.join(";") });
+  }
+
+  async getUserEvents(uid: string, limit = 30, lasttime = -1): Promise<JsonRecord> {
+    return this.call("user_event", { uid, limit, lasttime });
+  }
+
+  async getEventComments(
+    threadId: string,
+    limit = 20,
+    offset = 0,
+    before = 0,
+  ): Promise<JsonRecord> {
+    return this.call("comment_event", { threadId, limit, offset, before });
+  }
+
+  async addEventComment(threadId: string, content: string): Promise<JsonRecord> {
+    return this.call("comment", { t: 1, type: 6, threadId, content });
+  }
+
+  async replyEventComment(
+    threadId: string,
+    commentId: string,
+    content: string,
+  ): Promise<JsonRecord> {
+    return this.call("comment", {
+      t: 2,
+      type: 6,
+      threadId,
+      commentId,
+      content,
+    });
+  }
+
+  async deleteEventComment(threadId: string, commentId: string): Promise<JsonRecord> {
+    return this.call("comment", { t: 0, type: 6, threadId, commentId });
+  }
+
+  async setEventLike(threadId: string, liked: boolean): Promise<JsonRecord> {
+    return this.call("resource_like", {
+      t: liked ? 1 : 0,
+      type: 6,
+      threadId,
+    });
+  }
+
+  async setFollowUser(userId: string, following: boolean): Promise<JsonRecord> {
+    return this.call("follow", { id: userId, t: following ? 1 : 0 });
+  }
+
+  async updateAccountProfile(input: {
+    nickname?: string;
+    signature?: string;
+    gender?: 0 | 1 | 2;
+    birthdayMs?: number;
+    province?: number;
+    city?: number;
+  }): Promise<AccountProfile> {
+    const current = await this.getAccountProfile();
+    const nickname = input.nickname ?? current.nickname;
+    if (!nickname) {
+      throw new NeteaseApiError("user_update", null, "Current account nickname is unavailable");
+    }
+
+    await this.call("user_update", {
+      birthday: input.birthdayMs ?? current.birthdayMs ?? 0,
+      city: input.city ?? current.city ?? 0,
+      gender: input.gender ?? current.gender ?? 0,
+      nickname,
+      province: input.province ?? current.province ?? 0,
+      signature: input.signature ?? current.signature ?? "",
+    });
+    return this.getAccountProfile();
   }
 
   async acceptInvite(roomId: string, inviterId: string): Promise<TogetherRoom> {

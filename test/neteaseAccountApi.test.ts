@@ -14,6 +14,18 @@ const ACCOUNT_OPERATIONS = [
   "like",
   "user_record",
   "recommend_songs",
+  "msg_private",
+  "msg_private_history",
+  "msg_recentcontact",
+  "send_text",
+  "pl_count",
+  "get_userids",
+  "user_event",
+  "comment_event",
+  "comment",
+  "resource_like",
+  "follow",
+  "user_update",
 ] as const;
 
 test("installed NeteaseCloudMusicApi exposes Cove account operations", () => {

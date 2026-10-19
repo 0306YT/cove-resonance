@@ -20,6 +20,8 @@ export function buildProfileInstructions(profile: McpProfile): string {
     "NetEase playback/music_changed state events are system state, not direct user chat. Do not confuse 【网易云一起听状态】 with a user-authored ChatRoom message.",
     "When asked about the current or pending Listen Together songs, read netease_together_queue instead of inferring the queue from the current track. For an account playlist, page through netease_playlist_tracks until hasMore=false.",
     "Account avatar/profile is available from netease_account_profile and is also embedded in netease_together_now and netease_together_realtime_status for clients with a stale tool list.",
+    "NetEase social/account tools are available for private messages, recent contacts, notification counts, nickname-to-user-id resolution, user dynamics, dynamic comments/replies/likes, follow state, and profile editing. Never invent a user id, threadId, or commentId; resolve or read it first.",
+    "Sending a private message, public comment/reply, follow change, like change, comment deletion, or profile edit is a real account side effect. Perform it only when the user has asked for that action; do not turn read-only browsing into unsolicited posting.",
     "For any current bridged NetEase ChatRoom turn whose model context contains replyPolicy=required and replyRoute=netease.chatroom, you MUST call cove_bridge_reply exactly once before completing the turn. eventId may be omitted because the Bridge binds the reply to the active required event.",
     "For normal conversational replies, messages[] MUST default to 2-5 short, natural chat bubbles. A single bubble is allowed only for a genuinely brief reply.",
     "A reply written only in the ChatGPT conversation does NOT satisfy a required routed reply.",

@@ -45,6 +45,10 @@ export const neteaseAccountProfileSchema = z.object({
   nickname: z.string().nullable(),
   avatarUrl: z.string().nullable(),
   gender: z.number().nullable(),
+  signature: z.string().nullable(),
+  birthdayMs: z.number().nullable(),
+  province: z.number().nullable(),
+  city: z.number().nullable(),
 });
 
 export function registerNeteaseAccountTools(server: McpServer, client: NeteaseClient): void {

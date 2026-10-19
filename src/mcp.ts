@@ -5,6 +5,7 @@ import { registerBridgeWaitTool } from "./bridge/registerWaitTool.js";
 import { acceptsProfileSource, buildProfileInstructions, type McpProfile } from "./profiles.js";
 import { registerNeteaseAccountTools } from "./netease/accountTools.js";
 import { NeteaseClient } from "./netease/client.js";
+import { registerNeteaseSocialTools } from "./netease/socialTools.js";
 import { registerNeteaseTogetherTools } from "./netease/registerTogetherTools.js";
 import type { PlaybackStateStore } from "./netease/playbackState.js";
 import type { TogetherWorker } from "./netease/togetherWorker.js";
@@ -27,6 +28,7 @@ export function createMcpServer(
 
   const neteaseAccountClient = new NeteaseClient(process.env.NETEASE_COOKIE?.trim() ?? "");
   registerNeteaseAccountTools(server, neteaseAccountClient);
+  registerNeteaseSocialTools(server, neteaseAccountClient);
   registerBridgeApp(server);
   registerNeteaseTogetherTools(server, playbackState, togetherWorker, queue, eventFilter);
   registerBridgeTools(server, queue, eventFilter, togetherWorker);
