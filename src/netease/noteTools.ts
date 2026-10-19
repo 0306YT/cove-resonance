@@ -6,7 +6,7 @@ import { NeteaseClient } from "./client.js";
 type AnyRecord = Record<string, any>;
 type ApiFn = (params: Record<string, unknown>) => Promise<any>;
 
-const api = enhancedApiImport as unknown as Record<string, ApiFn>;
+const api = ((enhancedApiImport as any).default ?? enhancedApiImport) as Record<string, ApiFn>;
 const REAL_IP = "116.25.146.177";
 
 function bodyOf(value: any): AnyRecord {
