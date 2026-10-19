@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as enhancedApiImport from "@neteasecloudmusicapienhanced/api";
 import { z } from "zod";
+import { NeteaseClient } from "./client.js";
 
 type AnyRecord = Record<string, any>;
 type ApiFn = (params: Record<string, unknown>) => Promise<any>;
@@ -33,12 +34,8 @@ function parseEventMessage(event: AnyRecord): string | null {
 }
 
 async function accountId(cookie: string): Promise<string> {
-  const result = bodyOf(await requireApi("user_account")({ cookie, realIP: REAL_IP }));
-  const id = result?.profile?.userId ?? result?.account?.id;
-  if (id === undefined || id === null || String(id).trim() === "") {
-    throw new Error("Unable to resolve current NetEase account id");
-  }
-  return String(id);
+  const client = new NeteaseClient(cookie);
+  return client.getAccountId();
 }
 
 async function ownEvents(cookie: string, uid: string): Promise<AnyRecord[]> {
