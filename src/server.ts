@@ -150,50 +150,6 @@ export function createHttpServer(options: { mcpAccessToken?: string } = {}) {
     if (req.method === "POST" && url.pathname === "/fanqie/events") {
       writeJson(res, 503, { error: "fanqie_listener_paused" });
       return;
-
-      if (!fanqieAuthorized(req)) {
-        writeJson(res, 401, { error: "unauthorized" });
-        return;
-      }
-      try {
-        const parsed = fanqieInput.safeParse(await readJson(req));
-        if (!parsed.success) {
-          writeJson(res, 400, { error: parsed.error.flatten() });
-          return;
-        }
-        const createdAt = new Date().toISOString();
-        const id = parsed.data.eventId ?? randomUUID();
-        const text = "【番茄当前屏幕】\n" + parsed.data.text;
-        const modelContext = [
-          "FANQIE OCR STATE: this is the latest OCR-visible reading screen from the user's Fanqie app.",
-          "This is screen state, not a message typed by the user.",
-          parsed.data.context ?? "",
-        ].filter(Boolean).join("\n");
-        const event = buildBridgeEvent(id, "netease.fanqie", text, createdAt, modelContext);
-        event.stream = "state";
-        event.stateKey = "fanqie.current_page";
-        delete event.replyRoute;
-        delete event.replyPolicy;
-        event.visibleText = text;
-        event.modelContext = [
-          "MESSAGE ORIGIN: Fanqie OCR state.",
-          "This is the latest OCR-visible reading screen from the user's Fanqie app.",
-          "This is NOT NetEase state and NOT a message typed by the user.",
-          "Treat it only as the user's current reading context.",
-          "source=netease.fanqie",
-          "stream=state",
-          "stateKey=fanqie.current_page",
-          modelContext,
-          "createdAt=" + createdAt,
-        ].join("\n");
-        const created = queue.enqueue(event);
-        // Fanqie remains queryable through the queue, but must not wake the Widget Listener.
-        writeJson(res, created ? 201 : 200, { ok: true, created, eventId: id });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "invalid_request";
-        writeJson(res, message === "request_too_large" ? 413 : 400, { error: message });
-      }
-      return;
     }
 
     if (req.method === "POST" && url.pathname === "/events") {
