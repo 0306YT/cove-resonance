@@ -10,11 +10,13 @@ import { MCP_PATHS } from "./profiles.js";
 import { listenerWakeHub } from "./listenerWake.js";
 import { PlaybackStateStore } from "./netease/playbackState.js";
 import { createTogetherWorker } from "./netease/togetherWorker.js";
+import { publishNeteaseNote } from "./netease/noteTools.js";
 import { InMemoryEventQueue } from "./queue.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const INGEST_TOKEN = process.env.BRIDGE_INGEST_TOKEN ?? "";
 const FANQIE_INGEST_TOKEN = process.env.FANQIE_INGEST_TOKEN?.trim() ?? "";
+const OPS_TOKEN = process.env.COVE_OPS_TOKEN?.trim() ?? "";
 const UNIX_SOCKET = process.env.BRIDGE_UNIX_SOCKET?.trim() ?? "";
 const queue = new InMemoryEventQueue();
 const playbackState = new PlaybackStateStore();
@@ -88,6 +90,11 @@ function fanqieAuthorized(req: IncomingMessage): boolean {
   return secretMatches(bearerToken, FANQIE_INGEST_TOKEN);
 }
 
+function opsAuthorized(url: URL): boolean {
+  if (!OPS_TOKEN) return false;
+  return secretMatches(url.searchParams.get("token")?.trim() ?? "", OPS_TOKEN);
+}
+
 function mcpAuthorized(req: IncomingMessage, url: URL, accessToken: string): boolean {
   if (!accessToken) return true;
   const authorization = req.headers.authorization ?? "";
@@ -149,6 +156,29 @@ export function createHttpServer(options: { mcpAccessToken?: string } = {}) {
 
     if (req.method === "POST" && url.pathname === "/fanqie/events") {
       writeJson(res, 503, { error: "fanqie_listener_paused" });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/ops/netease/note/publish") {
+      if (!opsAuthorized(url)) {
+        writeJson(res, 401, { error: "unauthorized" });
+        return;
+      }
+      const text = url.searchParams.get("text")?.trim() ?? "";
+      const rawPrivacy = Number(url.searchParams.get("privacy") ?? "6");
+      if (!text || ![0, 1, 2, 6].includes(rawPrivacy)) {
+        writeJson(res, 400, { error: "text_required_and_privacy_must_be_0_1_2_or_6" });
+        return;
+      }
+      try {
+        const result = await publishNeteaseNote(text, rawPrivacy as 0 | 1 | 2 | 6);
+        writeJson(res, 200, { ok: true, ...result });
+      } catch (error) {
+        writeJson(res, 500, {
+          ok: false,
+          error: error instanceof Error ? error.message : "note_publish_failed",
+        });
+      }
       return;
     }
 
