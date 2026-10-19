@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as enhancedApiImport from "@neteasecloudmusicapienhanced/api";
+import * as legacyApiImport from "NeteaseCloudMusicApi";
 import { z } from "zod";
 import { NeteaseClient } from "./client.js";
 
@@ -7,6 +8,7 @@ type AnyRecord = Record<string, any>;
 type ApiFn = (params: Record<string, unknown>) => Promise<any>;
 
 const api = ((enhancedApiImport as any).default ?? enhancedApiImport) as Record<string, ApiFn>;
+const legacyApi = ((legacyApiImport as any).default ?? legacyApiImport) as Record<string, ApiFn>;
 const REAL_IP = "116.25.146.177";
 
 function bodyOf(value: any): AnyRecord {
@@ -17,6 +19,12 @@ function bodyOf(value: any): AnyRecord {
 function requireApi(name: string): ApiFn {
   const fn = api[name];
   if (typeof fn !== "function") throw new Error(`NetEase API function unavailable: ${name}`);
+  return fn;
+}
+
+function requireLegacyApi(name: string): ApiFn {
+  const fn = legacyApi[name];
+  if (typeof fn !== "function") throw new Error(`Legacy NetEase API function unavailable: ${name}`);
   return fn;
 }
 
@@ -39,7 +47,7 @@ async function accountId(cookie: string): Promise<string> {
 }
 
 async function ownEvents(cookie: string, uid: string): Promise<AnyRecord[]> {
-  const result = bodyOf(await requireApi("user_event")({
+  const result = bodyOf(await requireLegacyApi("user_event")({
     cookie,
     uid,
     limit: 30,
@@ -51,7 +59,7 @@ async function ownEvents(cookie: string, uid: string): Promise<AnyRecord[]> {
 
 async function deleteEventBestEffort(cookie: string, eventId: string): Promise<void> {
   try {
-    await requireApi("event_del")({ cookie, evId: eventId, realIP: REAL_IP });
+    await requireLegacyApi("event_del")({ cookie, evId: eventId, realIP: REAL_IP });
   } catch {
     // Best effort cleanup only.
   }
@@ -78,7 +86,7 @@ export async function publishNeteaseNote(
   const uid = await accountId(cookie);
   const startedAt = Date.now();
 
-  const posted = bodyOf(await requireApi("share_resource")({
+  const posted = bodyOf(await requireLegacyApi("share_resource")({
     cookie,
     type: "noresource",
     msg: cleanText,
