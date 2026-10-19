@@ -14,6 +14,7 @@ import { publishNeteaseNote } from "./netease/noteTools.js";
 import {
   buildMobilePrivacyRequest,
   completeMobileTask,
+  enqueueMobileNote,
   getMobileTask,
   mobileResultSchema,
   nextMobileTask,
@@ -197,6 +198,58 @@ export function createHttpServer(options: { mcpAccessToken?: string } = {}) {
           error: message,
         });
       }
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/ops/mobile/note/enqueue") {
+      if (!opsAuthorized(url)) {
+        writeJson(res, 401, { error: "unauthorized" });
+        return;
+      }
+      const text = url.searchParams.get("text")?.trim() ?? "";
+      const privacySetting = Number(url.searchParams.get("privacy") ?? "6");
+      if (!text || ![0, 1, 2, 6].includes(privacySetting)) {
+        writeJson(res, 400, { error: "text_required_and_privacy_must_be_0_1_2_or_6" });
+        return;
+      }
+      try {
+        const task = enqueueMobileNote(text, privacySetting as 0 | 1 | 2 | 6);
+        writeJson(res, 200, {
+          ok: true,
+          taskId: task.id,
+          state: task.state,
+          privacySetting: task.privacySetting,
+        });
+      } catch (error) {
+        writeJson(res, 200, {
+          ok: false,
+          error: error instanceof Error ? error.message : "enqueue_failed",
+        });
+      }
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/ops/mobile/status") {
+      if (!opsAuthorized(url)) {
+        writeJson(res, 401, { error: "unauthorized" });
+        return;
+      }
+      const id = url.searchParams.get("id")?.trim() ?? "";
+      const task = getMobileTask(id);
+      if (!task) {
+        writeJson(res, 404, { error: "unknown_task" });
+        return;
+      }
+      writeJson(res, 200, {
+        ok: true,
+        task: {
+          id: task.id,
+          state: task.state,
+          createdAt: task.createdAt,
+          privacySetting: task.privacySetting,
+          result: task.result ?? null,
+        },
+      });
       return;
     }
 
