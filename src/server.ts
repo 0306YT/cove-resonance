@@ -174,9 +174,11 @@ export function createHttpServer(options: { mcpAccessToken?: string } = {}) {
         const result = await publishNeteaseNote(text, rawPrivacy as 0 | 1 | 2 | 6);
         writeJson(res, 200, { ok: true, ...result });
       } catch (error) {
-        writeJson(res, 500, {
+        const message = error instanceof Error ? error.message : "note_publish_failed";
+        console.error("NetEase note publish failed", message);
+        writeJson(res, 200, {
           ok: false,
-          error: error instanceof Error ? error.message : "note_publish_failed",
+          error: message,
         });
       }
       return;
