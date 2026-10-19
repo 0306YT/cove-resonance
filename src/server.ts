@@ -11,12 +11,20 @@ import { listenerWakeHub } from "./listenerWake.js";
 import { PlaybackStateStore } from "./netease/playbackState.js";
 import { createTogetherWorker } from "./netease/togetherWorker.js";
 import { publishNeteaseNote } from "./netease/noteTools.js";
+import {
+  buildMobilePrivacyRequest,
+  completeMobileTask,
+  getMobileTask,
+  mobileResultSchema,
+  nextMobileTask,
+} from "./netease/mobileBridge.js";
 import { InMemoryEventQueue } from "./queue.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const INGEST_TOKEN = process.env.BRIDGE_INGEST_TOKEN ?? "";
 const FANQIE_INGEST_TOKEN = process.env.FANQIE_INGEST_TOKEN?.trim() ?? "";
 const OPS_TOKEN = process.env.COVE_OPS_TOKEN?.trim() ?? "";
+const MOBILE_BRIDGE_TOKEN = process.env.COVE_MOBILE_BRIDGE_TOKEN?.trim() ?? "";
 const UNIX_SOCKET = process.env.BRIDGE_UNIX_SOCKET?.trim() ?? "";
 const queue = new InMemoryEventQueue();
 const playbackState = new PlaybackStateStore();
@@ -93,6 +101,11 @@ function fanqieAuthorized(req: IncomingMessage): boolean {
 function opsAuthorized(url: URL): boolean {
   if (!OPS_TOKEN) return false;
   return secretMatches(url.searchParams.get("token")?.trim() ?? "", OPS_TOKEN);
+}
+
+function mobileBridgeAuthorized(url: URL): boolean {
+  if (!MOBILE_BRIDGE_TOKEN) return false;
+  return secretMatches(url.searchParams.get("token")?.trim() ?? "", MOBILE_BRIDGE_TOKEN);
 }
 
 function mcpAuthorized(req: IncomingMessage, url: URL, accessToken: string): boolean {
@@ -184,6 +197,105 @@ export function createHttpServer(options: { mcpAccessToken?: string } = {}) {
           error: message,
         });
       }
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/mobile/next") {
+      if (!mobileBridgeAuthorized(url)) {
+        writeJson(res, 401, { error: "unauthorized" });
+        return;
+      }
+      const task = nextMobileTask();
+      if (!task) {
+        writeJson(res, 200, { ok: true, task: null });
+        return;
+      }
+      writeJson(res, 200, {
+        ok: true,
+        task: {
+          id: task.id,
+          kind: task.kind,
+          createdAt: task.createdAt,
+          text: task.text,
+          privacySetting: task.privacySetting,
+          publishRequest: task.publishRequest,
+        },
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/mobile/privacy-request") {
+      if (!mobileBridgeAuthorized(url)) {
+        writeJson(res, 401, { error: "unauthorized" });
+        return;
+      }
+      try {
+        const body = await readJson(req) as Record<string, unknown>;
+        const taskId = String(body.taskId ?? "").trim();
+        const eventId = String(body.eventId ?? "").trim();
+        const privacySetting = Number(body.privacySetting ?? 6);
+        const task = getMobileTask(taskId);
+        if (!task || !eventId || ![0, 1, 2, 6].includes(privacySetting)) {
+          writeJson(res, 400, { error: "invalid_task_event_or_privacy" });
+          return;
+        }
+        writeJson(res, 200, {
+          ok: true,
+          request: buildMobilePrivacyRequest(eventId, privacySetting as 0 | 1 | 2 | 6),
+        });
+      } catch (error) {
+        writeJson(res, 400, {
+          ok: false,
+          error: error instanceof Error ? error.message : "invalid_request",
+        });
+      }
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/mobile/result") {
+      if (!mobileBridgeAuthorized(url)) {
+        writeJson(res, 401, { error: "unauthorized" });
+        return;
+      }
+      try {
+        const parsed = mobileResultSchema.safeParse(await readJson(req));
+        if (!parsed.success) {
+          writeJson(res, 400, { error: parsed.error.flatten() });
+          return;
+        }
+        const task = completeMobileTask(parsed.data.taskId, parsed.data.ok, parsed.data);
+        writeJson(res, 200, { ok: true, taskId: task.id, state: task.state });
+      } catch (error) {
+        writeJson(res, 400, {
+          ok: false,
+          error: error instanceof Error ? error.message : "invalid_request",
+        });
+      }
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/mobile/status") {
+      if (!mobileBridgeAuthorized(url)) {
+        writeJson(res, 401, { error: "unauthorized" });
+        return;
+      }
+      const id = url.searchParams.get("id")?.trim() ?? "";
+      const task = getMobileTask(id);
+      if (!task) {
+        writeJson(res, 404, { error: "unknown_task" });
+        return;
+      }
+      writeJson(res, 200, {
+        ok: true,
+        task: {
+          id: task.id,
+          kind: task.kind,
+          state: task.state,
+          createdAt: task.createdAt,
+          privacySetting: task.privacySetting,
+          result: task.result ?? null,
+        },
+      });
       return;
     }
 
